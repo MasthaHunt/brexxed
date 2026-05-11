@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertTriangle, Check, Copy, Download, Eye, ShieldCheck, BadgeDollarSign } from "lucide-react";
+import { AlertTriangle, Check, Copy, Download, Eye, BadgeDollarSign } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -65,38 +65,21 @@ const CopyField = ({
   );
 };
 
-const AccountFields = ({ account, swiftVisible }: { account: Account; swiftVisible: boolean }) => (
+const AccountFields = ({ account }: { account: Account }) => (
   <div className="grid gap-2.5 sm:grid-cols-2">
     <CopyField label="Account number" value={account.number} masked />
     <CopyField label="Routing number" value={account.routing} />
     <CopyField label="IBAN" value={account.iban} />
-    {swiftVisible ? (
-      <CopyField label="SWIFT / BIC" value={account.swift} />
-    ) : (
-      <div className="flex flex-col gap-1 rounded-xl border border-border bg-muted/30 px-3.5 py-2.5">
-        <span className="text-[11px] font-medium text-muted-foreground">SWIFT / BIC</span>
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-sm tracking-wide text-muted-foreground/60 italic">
-            Pending update
-          </span>
-          <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">
-            <ShieldCheck className="h-2.5 w-2.5" />
-            On hold
-          </span>
-        </div>
-      </div>
-    )}
+    <CopyField label="SWIFT / BIC" value={account.swift} />
     <CopyField label="Network" value={account.network} />
   </div>
 );
 
 const AccountDetails = ({
   account,
-  swiftVisible,
   onOpenModal,
 }: {
   account: Account;
-  swiftVisible: boolean;
   onOpenModal: () => void;
 }) => (
   <motion.div
@@ -175,7 +158,7 @@ const AccountDetails = ({
         </div>
       )}
 
-      <AccountFields account={account} swiftVisible={swiftVisible} />
+      <AccountFields account={account} />
       <p className="pt-1 text-[11px] leading-relaxed text-muted-foreground">
         Share your SWIFT/BIC and IBAN with international senders. For domestic ACH transfers, provide the routing and account numbers.
       </p>
@@ -184,7 +167,7 @@ const AccountDetails = ({
 );
 
 const Accounts = () => {
-  const { state, adminControls } = useAppState();
+  const { state } = useAppState();
   const checking = state.accounts.filter((a) => a.type === "checking");
   const savings = state.accounts.filter((a) => a.type === "savings");
   const [modalAccount, setModalAccount] = useState<Account | null>(null);
@@ -194,7 +177,6 @@ const Accounts = () => {
       <div key={a.id} className="rounded-2xl border border-border bg-card p-5 shadow-card md:p-6">
         <AccountDetails
           account={a}
-          swiftVisible={adminControls.swiftVisible}
           onOpenModal={() => setModalAccount(a)}
         />
       </div>
@@ -241,7 +223,7 @@ const Accounts = () => {
                   {modalAccount.network} · {modalAccount.type === "checking" ? "Checking" : modalAccount.type === "savings" ? "Savings" : "Investment"}
                 </p>
               </div>
-              <AccountFields account={modalAccount} swiftVisible={adminControls.swiftVisible} />
+              <AccountFields account={modalAccount} />
               <p className="text-[11px] leading-relaxed text-muted-foreground">
                 For international wires, share your SWIFT/BIC and IBAN with the sending bank. Use the routing number for domestic ACH transfers.
               </p>

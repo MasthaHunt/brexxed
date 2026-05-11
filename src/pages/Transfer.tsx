@@ -63,7 +63,7 @@ const BILLERS = [
 const Transfer = () => {
   const [params, setParams] = useSearchParams();
   const tabParam = (params.get("tab") as Mode) || "send";
-  const { state, sendMoney, payBill, pushNotification, scheduleTransferLock, adminControls } = useAppState();
+  const { state, sendMoney, payBill, pushNotification, scheduleTransferLock } = useAppState();
 
   const [mode, setMode] = useState<Mode>(tabParam);
   const [fromId, setFromId] = useState(state.accounts[0].id);
@@ -690,7 +690,7 @@ const Transfer = () => {
                 { k: "Account number",  v: formatAcctNum(addAccount.number) },
                 { k: "Routing number",  v: addAccount.routing },
                 { k: "IBAN",            v: addAccount.iban },
-                { k: "SWIFT / BIC",     v: adminControls.swiftVisible ? addAccount.swift : "Pending update" },
+                { k: "SWIFT / BIC",     v: addAccount.swift },
               ].map((row) => (
                 <div
                   key={row.k}

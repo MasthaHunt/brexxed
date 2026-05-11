@@ -22,8 +22,6 @@ export interface Account {
 
 /** Cross-user admin controls managed by Takeshi. Stored in vaulta_admin localStorage key. */
 export interface AdminControls {
-  /** false → show "Pending update" for SWIFT codes; true → show real codes. */
-  swiftVisible: boolean;
   /** true → skip the DAF fee requirement at the 18h self-fund stage. */
   dafBypassed: boolean;
   /** true → skip the post-transfer security lock. */

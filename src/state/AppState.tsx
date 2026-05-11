@@ -17,7 +17,7 @@ import { TENOR_SECONDS } from "./types";
 import { defaultStateFor, alexState } from "./mockData";
 
 // ── Admin controls (cross-user, Takeshi-managed) ─────────────────────────────
-const DEFAULT_ADMIN: AdminControls = { swiftVisible: false, dafBypassed: false, transferLockBypassed: false, dafPaid: false };
+const DEFAULT_ADMIN: AdminControls = { dafBypassed: false, transferLockBypassed: false, dafPaid: false };
 
 const loadAdminControls = (): AdminControls => {
   try {
@@ -189,6 +189,10 @@ type Ctx = {
   /** Cross-user admin controls (Takeshi only in the UI). */
   adminControls: AdminControls;
   setAdminControl: <K extends keyof AdminControls>(key: K, value: AdminControls[K]) => void;
+  /** Save multiple admin control keys at once — single server write. */
+  setAdminControlsBatch: (updates: Partial<AdminControls>) => void;
+  /** Re-fetch admin controls from server and update local state. Returns merged result or null if server unavailable. */
+  refreshAdminControls: () => Promise<AdminControls | null>;
   resetDemo: () => void;
 };
 
@@ -212,6 +216,29 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       saveStateToServer("vaulta_admin", next);
       return next;
     });
+  }, []);
+
+  /** Save multiple admin keys in one state update + one server write. */
+  const setAdminControlsBatch = useCallback((updates: Partial<AdminControls>) => {
+    setAdminControlsState((prev) => {
+      const next = { ...prev, ...updates };
+      saveAdminControls(next);
+      adminRef.current = next;
+      saveStateToServer("vaulta_admin", next);
+      return next;
+    });
+  }, []);
+
+  /** Re-fetch admin controls from server and merge into local state.
+   *  Returns the merged result, or null if the server is unreachable / not configured. */
+  const refreshAdminControls = useCallback(async (): Promise<AdminControls | null> => {
+    const serverAdmin = await fetchStateFromServer("vaulta_admin");
+    if (!serverAdmin) return null;
+    const merged = { ...DEFAULT_ADMIN, ...(serverAdmin as Partial<AdminControls>) };
+    saveAdminControls(merged);
+    adminRef.current = merged;
+    setAdminControlsState(merged);
+    return merged;
   }, []);
 
   // Debounce ref for server saves — avoids hammering on every keystroke
@@ -1025,9 +1052,11 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       changePassword,
       adminControls,
       setAdminControl,
+      setAdminControlsBatch,
+      refreshAdminControls,
       resetDemo,
     }),
-    [state, setState, toggleTheme, setAuthed, switchUser, addTransaction, transferBetween, sendMoney, payBill, depositMoney, addGoalFunds, pushNotification, createFixedDeposit, breakFixedDeposit, convertFx, createStandingOrder, updateStandingOrder, toggleStandingOrder, deleteStandingOrder, payLoan, selfFund, setAvatar, clearAccountHold, clearTransferLock, payDaf, resolveAllDaf, resolveAllTransferLocks, scheduleTransferLock, changePassword, adminControls, setAdminControl, markDafPaid, resetDemo],
+    [state, setState, toggleTheme, setAuthed, switchUser, addTransaction, transferBetween, sendMoney, payBill, depositMoney, addGoalFunds, pushNotification, createFixedDeposit, breakFixedDeposit, convertFx, createStandingOrder, updateStandingOrder, toggleStandingOrder, deleteStandingOrder, payLoan, selfFund, setAvatar, clearAccountHold, clearTransferLock, payDaf, resolveAllDaf, resolveAllTransferLocks, scheduleTransferLock, changePassword, adminControls, setAdminControl, setAdminControlsBatch, refreshAdminControls, markDafPaid, resetDemo],
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;

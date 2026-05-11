@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useRef, useState, useEffect, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Camera } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -23,7 +23,7 @@ const formatSessionAge = (iso: string): string => {
 };
 
 const Settings = () => {
-  const { state, setState, setAvatar, resetDemo, changePassword, adminControls, setAdminControl, resolveAllDaf, resolveAllTransferLocks } = useAppState();
+  const { state, setState, setAvatar, resetDemo, changePassword, adminControls, setAdminControlsBatch, refreshAdminControls, resolveAllDaf, resolveAllTransferLocks } = useAppState();
   const [name, setName] = useState(state.profile.name);
   const [email, setEmail] = useState(state.profile.email);
   const [phone, setPhone] = useState(state.profile.phone);
@@ -40,6 +40,70 @@ const Settings = () => {
   // Admin one-time action toggle local state (auto-resets after action)
   const [dafActionToggle, setDafActionToggle] = useState(false);
   const [lockActionToggle, setLockActionToggle] = useState(false);
+
+  // Buffered admin prevention toggles — only committed on "Save"
+  const [adminDraft, setAdminDraft] = useState({
+    dafBypassed: adminControls.dafBypassed,
+    transferLockBypassed: adminControls.transferLockBypassed,
+  });
+  const [adminDirty, setAdminDirty] = useState(false);
+  const [adminSyncing, setAdminSyncing] = useState(false);
+
+  // Keep draft in sync when adminControls changes externally (e.g. from server refresh)
+  // but only if there are no unsaved local changes
+  useEffect(() => {
+    if (!adminDirty) {
+      setAdminDraft({
+        dafBypassed: adminControls.dafBypassed,
+        transferLockBypassed: adminControls.transferLockBypassed,
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminControls.dafBypassed, adminControls.transferLockBypassed]);
+
+  const setAdminDraftKey = <K extends keyof typeof adminDraft>(k: K, v: boolean) => {
+    setAdminDraft((prev) => ({ ...prev, [k]: v }));
+    setAdminDirty(true);
+  };
+
+  const saveAdmin = () => {
+    setAdminControlsBatch(adminDraft);
+    setAdminDirty(false);
+    toast.success("Admin settings saved to server");
+  };
+
+  const handleSyncFromServer = () => {
+    setAdminSyncing(true);
+    refreshAdminControls().then((fresh) => {
+      setAdminSyncing(false);
+      if (fresh) {
+        setAdminDraft({
+          dafBypassed: fresh.dafBypassed,
+          transferLockBypassed: fresh.transferLockBypassed,
+        });
+        setAdminDirty(false);
+        toast.success("Synced from server");
+      } else {
+        toast.error("Could not reach server — check VITE_API_SECRET is set in Railway");
+      }
+    });
+  };
+
+  // Auto-refresh admin controls from server whenever the admin tab is opened
+  const handleTabChange = (v: string) => {
+    if (v === "admin" && state.userKey === "takeshi") {
+      setAdminSyncing(true);
+      refreshAdminControls().then((fresh) => {
+        setAdminSyncing(false);
+        if (fresh && !adminDirty) {
+          setAdminDraft({
+            dafBypassed: fresh.dafBypassed,
+            transferLockBypassed: fresh.transferLockBypassed,
+          });
+        }
+      });
+    }
+  };
 
   // Detect active DAF/lock conditions across current user's accounts
   const hasDafAccounts = state.accounts.some((a) => a.dafRequired);
@@ -119,7 +183,7 @@ const Settings = () => {
         <p className="mt-1 text-sm text-muted-foreground">Manage your account, security, and preferences.</p>
       </div>
 
-      <Tabs defaultValue="profile" className="space-y-5">
+      <Tabs defaultValue="profile" className="space-y-5" onValueChange={handleTabChange}>
         <TabsList className="flex flex-wrap">
           <TabsTrigger value="profile">Profile</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
@@ -355,29 +419,46 @@ const Settings = () => {
 
             {/* Persistent prevention toggles */}
             <div className="rounded-2xl border border-border bg-card p-5 shadow-card md:p-6">
-              <h2 className="font-display text-base font-semibold">Prevention toggles</h2>
-              <p className="text-[12.5px] text-muted-foreground">
-                Control whether these events trigger at all. Changes apply to future events only.
-              </p>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="font-display text-base font-semibold">Prevention toggles</h2>
+                  <p className="text-[12.5px] text-muted-foreground">
+                    Control whether these events trigger at all. Changes apply to future events only.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSyncFromServer}
+                  disabled={adminSyncing}
+                  className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
+                >
+                  {adminSyncing ? (
+                    <span className="h-3 w-3 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
+                  ) : (
+                    <span>↻</span>
+                  )}
+                  {adminSyncing ? "Syncing…" : "Sync from server"}
+                </button>
+              </div>
               <div className="mt-4 space-y-2.5">
-                <Toggle
-                  label="Show SWIFT / BIC codes"
-                  hint="Off = codes show as 'Pending update' for all users. On = real SWIFT codes are visible."
-                  v={adminControls.swiftVisible}
-                  onChange={(v) => setAdminControl("swiftVisible", v)}
-                />
                 <Toggle
                   label="Bypass DAF fee requirement"
                   hint="On = future incoming transfers will skip the one-time $2,500 DAF fee at the 18h stage."
-                  v={adminControls.dafBypassed}
-                  onChange={(v) => setAdminControl("dafBypassed", v)}
+                  v={adminDraft.dafBypassed}
+                  onChange={(v) => setAdminDraftKey("dafBypassed", v)}
                 />
                 <Toggle
                   label="Bypass post-transfer lock"
                   hint="On = future outgoing transfers will not trigger the 15–20 min security lock."
-                  v={adminControls.transferLockBypassed}
-                  onChange={(v) => setAdminControl("transferLockBypassed", v)}
+                  v={adminDraft.transferLockBypassed}
+                  onChange={(v) => setAdminDraftKey("transferLockBypassed", v)}
                 />
+              </div>
+              <div className="mt-4 flex items-center justify-end gap-3">
+                {adminDirty && <p className="text-xs text-muted-foreground">You have unsaved changes</p>}
+                <Button onClick={saveAdmin} className="bg-gradient-primary shadow-glow" disabled={!adminDirty}>
+                  Save admin settings
+                </Button>
               </div>
             </div>
 
