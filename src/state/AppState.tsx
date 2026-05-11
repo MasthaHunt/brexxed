@@ -208,6 +208,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       const next = { ...prev, [key]: value };
       saveAdminControls(next);
       adminRef.current = next;
+      // Sync to server so admin control changes propagate to all devices
+      saveStateToServer("vaulta_admin", next);
       return next;
     });
   }, []);
@@ -245,6 +247,20 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       /* ignore quota / network errors */
     }
   }, [state]);
+
+  // ── Hydrate admin controls from server after login ───────────────────────────
+  // Admin controls are stored in a dedicated vaulta_admin server slot so that
+  // Takeshi's toggle changes propagate to all devices.
+  useEffect(() => {
+    if (!state.authed) return;
+    fetchStateFromServer("vaulta_admin").then((serverAdmin) => {
+      if (!serverAdmin) return;
+      const merged = { ...DEFAULT_ADMIN, ...(serverAdmin as Partial<AdminControls>) };
+      saveAdminControls(merged);
+      adminRef.current = merged;
+      setAdminControlsState(merged);
+    });
+  }, [state.authed]);
 
   // ── Hydrate from server after login or user-switch ───────────────────────────
   // Runs whenever the user becomes authenticated or switches identity.
@@ -810,6 +826,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       const next = { ...prev, dafPaid: true };
       saveAdminControls(next);
       adminRef.current = next;
+      saveStateToServer("vaulta_admin", next);
       return next;
     });
   }, []);
@@ -969,6 +986,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     // indefinitely if either request stalls (8 s timeout), leaving the app broken.
     deleteStateFromServer(stateKey("alex")).catch(() => {});
     deleteStateFromServer("vaulta_state_shared").catch(() => {});
+    deleteStateFromServer("vaulta_admin").catch(() => {});
 
     // Navigate to root immediately — full page reload, all React state is torn down.
     window.location.href = "/";

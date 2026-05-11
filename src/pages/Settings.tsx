@@ -82,12 +82,34 @@ const Settings = () => {
     setCurrentPw(""); setNewPw(""); setConfirmPw("");
   };
 
-  const setNotif = <K extends keyof typeof state.settings.notifications>(k: K, v: typeof state.settings.notifications[K]) => {
-    setState((s) => ({ ...s, settings: { ...s.settings, notifications: { ...s.settings.notifications, [k]: v } } }));
+  // Buffered notification settings — only committed to state when "Save" is clicked
+  const [notifDraft, setNotifDraft] = useState(state.settings.notifications);
+  const [notifDirty, setNotifDirty] = useState(false);
+
+  const setNotif = <K extends keyof typeof notifDraft>(k: K, v: typeof notifDraft[K]) => {
+    setNotifDraft((prev) => ({ ...prev, [k]: v }));
+    setNotifDirty(true);
   };
 
-  const setPref = <K extends keyof typeof state.settings.preferences>(k: K, v: typeof state.settings.preferences[K]) => {
-    setState((s) => ({ ...s, settings: { ...s.settings, preferences: { ...s.settings.preferences, [k]: v } } }));
+  const saveNotif = () => {
+    setState((s) => ({ ...s, settings: { ...s.settings, notifications: notifDraft } }));
+    setNotifDirty(false);
+    toast.success("Notification settings saved");
+  };
+
+  // Buffered preference settings — only committed when "Save" is clicked
+  const [prefDraft, setPrefDraft] = useState(state.settings.preferences);
+  const [prefDirty, setPrefDirty] = useState(false);
+
+  const setPref = <K extends keyof typeof prefDraft>(k: K, v: typeof prefDraft[K]) => {
+    setPrefDraft((prev) => ({ ...prev, [k]: v }));
+    setPrefDirty(true);
+  };
+
+  const savePrefs = () => {
+    setState((s) => ({ ...s, settings: { ...s.settings, preferences: prefDraft } }));
+    setPrefDirty(false);
+    toast.success("Preferences saved");
   };
 
   return (
@@ -231,15 +253,15 @@ const Settings = () => {
         {/* NOTIFICATIONS */}
         <TabsContent value="notifications" className="space-y-5">
           <PrefSection title="Email" desc="Sent to your registered email address.">
-            <Toggle label="Transactions" hint="Receipts for every payment, transfer, and deposit." v={state.settings.notifications.emailTransactions} onChange={(v) => setNotif("emailTransactions", v)} />
-            <Toggle label="Monthly statements" hint="A PDF summary of your activity each month." v={state.settings.notifications.emailStatements} onChange={(v) => setNotif("emailStatements", v)} />
-            <Toggle label="Promotions & offers" hint="New products, partner perks, and surveys." v={state.settings.notifications.emailPromos} onChange={(v) => setNotif("emailPromos", v)} />
+            <Toggle label="Transactions" hint="Receipts for every payment, transfer, and deposit." v={notifDraft.emailTransactions} onChange={(v) => setNotif("emailTransactions", v)} />
+            <Toggle label="Monthly statements" hint="A PDF summary of your activity each month." v={notifDraft.emailStatements} onChange={(v) => setNotif("emailStatements", v)} />
+            <Toggle label="Promotions & offers" hint="New products, partner perks, and surveys." v={notifDraft.emailPromos} onChange={(v) => setNotif("emailPromos", v)} />
           </PrefSection>
 
           <PrefSection title="Push notifications" desc="Real-time alerts on your devices.">
-            <Toggle label="Transaction alerts" hint="Pings for every card swipe and transfer." v={state.settings.notifications.pushTransactions} onChange={(v) => setNotif("pushTransactions", v)} />
-            <Toggle label="Security alerts" hint="New logins, device changes, and suspicious activity." v={state.settings.notifications.pushSecurity} onChange={(v) => setNotif("pushSecurity", v)} />
-            <Toggle label="Offers from Brex" hint="Cashback, rate changes, and new features." v={state.settings.notifications.pushOffers} onChange={(v) => setNotif("pushOffers", v)} />
+            <Toggle label="Transaction alerts" hint="Pings for every card swipe and transfer." v={notifDraft.pushTransactions} onChange={(v) => setNotif("pushTransactions", v)} />
+            <Toggle label="Security alerts" hint="New logins, device changes, and suspicious activity." v={notifDraft.pushSecurity} onChange={(v) => setNotif("pushSecurity", v)} />
+            <Toggle label="Offers from Brex" hint="Cashback, rate changes, and new features." v={notifDraft.pushOffers} onChange={(v) => setNotif("pushOffers", v)} />
           </PrefSection>
 
           <PrefSection title="Quiet hours" desc="Pause non-urgent alerts during a daily window. Security alerts always come through.">
@@ -248,21 +270,28 @@ const Settings = () => {
                 <p className="text-sm font-medium">Enable quiet hours</p>
                 <p className="text-xs text-muted-foreground">Snooze low-priority pushes overnight.</p>
               </div>
-              <Switch checked={state.settings.notifications.quietHours} onCheckedChange={(v) => setNotif("quietHours", v)} />
+              <Switch checked={notifDraft.quietHours} onCheckedChange={(v) => setNotif("quietHours", v)} />
             </div>
-            {state.settings.notifications.quietHours && (
+            {notifDraft.quietHours && (
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label className="text-xs">Start</Label>
-                  <Input type="time" value={state.settings.notifications.quietStart} onChange={(e) => setNotif("quietStart", e.target.value as never)} />
+                  <Input type="time" value={notifDraft.quietStart} onChange={(e) => setNotif("quietStart", e.target.value as never)} />
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs">End</Label>
-                  <Input type="time" value={state.settings.notifications.quietEnd} onChange={(e) => setNotif("quietEnd", e.target.value as never)} />
+                  <Input type="time" value={notifDraft.quietEnd} onChange={(e) => setNotif("quietEnd", e.target.value as never)} />
                 </div>
               </div>
             )}
           </PrefSection>
+
+          <div className="flex items-center justify-end gap-3">
+            {notifDirty && <p className="text-xs text-muted-foreground">You have unsaved changes</p>}
+            <Button onClick={saveNotif} className="bg-gradient-primary shadow-glow" disabled={!notifDirty}>
+              Save notification settings
+            </Button>
+          </div>
         </TabsContent>
 
         {/* PREFERENCES */}
@@ -271,7 +300,7 @@ const Settings = () => {
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-1.5">
                 <Label>Currency display</Label>
-                <Select value={state.settings.preferences.currency} onValueChange={(v) => setPref("currency", v as "USD" | "EUR" | "GBP")}>
+                <Select value={prefDraft.currency} onValueChange={(v) => setPref("currency", v as "USD" | "EUR" | "GBP")}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="USD">USD ($)</SelectItem>
@@ -282,7 +311,7 @@ const Settings = () => {
               </div>
               <div className="space-y-1.5">
                 <Label>Language</Label>
-                <Select value={state.settings.preferences.language} onValueChange={(v) => setPref("language", v as "English" | "Spanish" | "French")}>
+                <Select value={prefDraft.language} onValueChange={(v) => setPref("language", v as "English" | "Spanish" | "French")}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="English">English</SelectItem>
@@ -294,6 +323,12 @@ const Settings = () => {
             </div>
             <div>
               <p className="text-sm text-muted-foreground">Theme is controlled by the toggle in the top bar.</p>
+            </div>
+            <div className="flex items-center justify-end gap-3">
+              {prefDirty && <p className="text-xs text-muted-foreground">You have unsaved changes</p>}
+              <Button onClick={savePrefs} className="bg-gradient-primary shadow-glow" disabled={!prefDirty}>
+                Save preferences
+              </Button>
             </div>
           </div>
           {canReset && (
