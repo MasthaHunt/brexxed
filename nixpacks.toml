@@ -1,0 +1,15 @@
+# Force Nixpacks to use the Node.js provider only.
+# Without this, Railway sometimes picks its "Staticfile" (Caddy) provider
+# which causes extra COPY layers that can hit a stale Docker cache.
+
+providers = ["node"]
+
+[phases.install]
+cmds = ["npm install"]
+
+[phases.build]
+# Remove any Vite build cache before building to ensure a fully fresh bundle.
+cmds = ["rm -rf node_modules/.vite dist && npm run build"]
+
+[start]
+cmd = "node server.js"
