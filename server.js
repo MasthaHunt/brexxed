@@ -33,6 +33,14 @@ const API_SECRET = process.env.API_SECRET ?? "";
 
 app.use(express.json({ limit: "5mb" }));
 
+// ── Redirect bare domain to www ──────────────────────────────────────────────
+app.use((req, res, next) => {
+  if (req.headers.host === "brexledger.com") {
+    return res.redirect(301, `https://www.brexledger.com${req.url}`);
+  }
+  next();
+});
+
 // ── Static files (built Vite app) ────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, "dist")));
 
