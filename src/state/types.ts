@@ -18,6 +18,9 @@ export interface Account {
   dafRequired?: boolean;
   /** When true, account is temporarily locked following a recent outgoing transfer. */
   transferLocked?: boolean;
+  /** ISO timestamp written by the "Clear DAF" SQL query.
+   *  Signals the frontend to start the 6 h post-DAF settlement timer when detected on sync. */
+  dafClearedAt?: string;
 }
 
 /** Cross-user admin controls managed by Takeshi. Stored in vaulta_admin localStorage key. */

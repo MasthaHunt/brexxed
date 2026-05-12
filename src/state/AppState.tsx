@@ -423,6 +423,59 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     }, totalMs);
   }, [pushNotification, setState]);
 
+  // ── Detect SQL-cleared DAF ────────────────────────────────────────────────────
+  // When the "Clear DAF" SQL query runs, it writes dafClearedAt onto the account.
+  // On the next sync / login, this useEffect detects that field, starts the exact
+  // 6 h remaining settlement timer, then immediately wipes dafClearedAt so it
+  // never re-triggers.
+  useEffect(() => {
+    const dafCleared = state.accounts.filter((a) => !!a.dafClearedAt && !a.dafRequired);
+    if (dafCleared.length === 0) return;
+
+    for (const acc of dafCleared) {
+      const clearedAt = acc.dafClearedAt!;
+      const tx = state.transactions.find(
+        (t) => t.tenor === "selffund" && t.status === "pending" && t.accountId === acc.id,
+      );
+      if (!tx) continue;
+
+      const elapsed = Date.now() - new Date(clearedAt).getTime();
+      const remaining = Math.max(500, 6 * 60 * 60 * 1000 - elapsed);
+
+      // Wipe dafClearedAt immediately — prevents this effect from re-running
+      setState((s) => ({
+        ...s,
+        accounts: s.accounts.map((a) =>
+          a.id === acc.id ? { ...a, dafClearedAt: undefined } : a,
+        ),
+      }));
+
+      // Schedule settlement at the 6 h mark from when DAF was cleared
+      const txId = tx.id;
+      const amount = tx.amount;
+      const accountId = acc.id;
+      setTimeout(() => {
+        setState((s) => {
+          const t = s.transactions.find((t) => t.id === txId);
+          if (!t || t.status === "completed") return s;
+          const next = adjustBalance(s, accountId, amount);
+          return {
+            ...next,
+            transactions: next.transactions.map((t) =>
+              t.id === txId ? { ...t, status: "completed" as const } : t,
+            ),
+          };
+        });
+        pushNotification({
+          type: "transaction",
+          title: "Funds settled",
+          body: "Your incoming transfer has been fully processed and credited to your account.",
+        });
+      }, remaining);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.accounts]);
+
   const addTransaction: Ctx["addTransaction"] = useCallback((tx) => {
     const initialStatus = tx.status ?? (tx.tenor && tx.tenor !== "instant" ? "pending" : "completed");
     const newTx: Transaction = {
