@@ -63,7 +63,7 @@ const BILLERS = [
 const Transfer = () => {
   const [params, setParams] = useSearchParams();
   const tabParam = (params.get("tab") as Mode) || "send";
-  const { state, sendMoney, payBill, pushNotification, scheduleTransferLock } = useAppState();
+  const { state, sendMoney, payBill, pushNotification, scheduleTransferLock, verifyPin } = useAppState();
 
   const [mode, setMode] = useState<Mode>(tabParam);
   const [fromId, setFromId] = useState(state.accounts[0].id);
@@ -94,6 +94,12 @@ const Transfer = () => {
   const [successOpen, setSuccessOpen] = useState(false);
   const [loaderOpen, setLoaderOpen] = useState(false);
   const [loaderLabel, setLoaderLabel] = useState("Processing…");
+
+  // Transaction PIN dialog
+  const [pinDialogOpen, setPinDialogOpen] = useState(false);
+  const [pinEntry, setPinEntry] = useState("");
+  const [pinVerifying, setPinVerifying] = useState(false);
+  const [pinError, setPinError] = useState("");
 
   const fromAccount = state.accounts.find((a) => a.id === fromId)!;
   const addAccount = state.accounts.find((a) => a.id === addAccountId) ?? state.accounts[0];
@@ -236,8 +242,8 @@ const Transfer = () => {
     return 1400; // bills
   };
 
-  const handleConfirm = () => {
-    setReviewOpen(false);
+  // The actual transfer execution — called after PIN is verified
+  const executeTransaction = () => {
     setLoaderLabel(
       mode === "send" && intlMode ? "Sending international wire…"
         : mode === "send" ? "Sending transfer…"
@@ -272,7 +278,7 @@ const Transfer = () => {
           body: `${formatCurrency(billAmtNum)} payment to ${activeBiller.name} is being processed.`,
         });
       }
-      // Schedule post-transfer security lock (15–20 min, unless bypassed by admin)
+      // Schedule 2h post-transfer account review lock (unless bypassed by admin)
       scheduleTransferLock(fromId);
       setLoaderOpen(false);
       setSuccessOpen(true);
@@ -283,6 +289,40 @@ const Transfer = () => {
         setBillAccount(""); setBillAmount("");
       }, 1800);
     }, loaderDuration());
+  };
+
+  /** Step 1: Close review dialog and open PIN dialog (or skip PIN if none set). */
+  const handleConfirm = () => {
+    setReviewOpen(false);
+    const hasPin = !!state.settings.security.pin;
+    if (!hasPin) {
+      // No PIN set — skip PIN step and execute immediately
+      executeTransaction();
+      return;
+    }
+    setPinEntry("");
+    setPinError("");
+    setPinDialogOpen(true);
+  };
+
+  /** Step 2: Verify entered PIN then execute. */
+  const handlePinSubmit = async () => {
+    if (!/^\d{4}$/.test(pinEntry)) {
+      setPinError("PIN must be exactly 4 digits");
+      return;
+    }
+    setPinVerifying(true);
+    const ok = await verifyPin(pinEntry);
+    setPinVerifying(false);
+    if (!ok) {
+      setPinError("Incorrect PIN — please try again");
+      setPinEntry("");
+      return;
+    }
+    setPinDialogOpen(false);
+    setPinEntry("");
+    setPinError("");
+    executeTransaction();
   };
 
   const copy = async (val: string, key: string) => {
@@ -820,6 +860,40 @@ const Transfer = () => {
 
       {/* In-app transaction loader */}
       <TxLoader open={loaderOpen} label={loaderLabel} />
+
+      {/* Transaction PIN verification dialog */}
+      <Dialog open={pinDialogOpen} onOpenChange={(o) => { if (!o) { setPinDialogOpen(false); setPinEntry(""); setPinError(""); } }}>
+        <DialogContent className="sm:max-w-xs">
+          <DialogHeader>
+            <DialogTitle>Enter transaction PIN</DialogTitle>
+            <DialogDescription>
+              Enter your 4-digit PIN to authorise this transaction.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Input
+              type="password"
+              inputMode="numeric"
+              maxLength={4}
+              value={pinEntry}
+              onChange={(e) => { setPinEntry(e.target.value.replace(/\D/g, "").slice(0, 4)); setPinError(""); }}
+              onKeyDown={(e) => { if (e.key === "Enter") handlePinSubmit(); }}
+              placeholder="• • • •"
+              className="text-center text-xl tracking-[0.5em]"
+              autoFocus
+            />
+            {pinError && <p className="text-xs text-destructive">{pinError}</p>}
+          </div>
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="ghost" onClick={() => { setPinDialogOpen(false); setPinEntry(""); setPinError(""); }}>
+              Cancel
+            </Button>
+            <Button onClick={handlePinSubmit} disabled={pinVerifying || pinEntry.length !== 4} className="bg-gradient-primary shadow-glow">
+              {pinVerifying ? "Verifying…" : "Confirm"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

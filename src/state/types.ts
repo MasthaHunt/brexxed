@@ -47,12 +47,12 @@ export type TxCategory =
  * progressive timeline shown on the transaction detail page. */
 export type TxTenor = "instant" | "fast" | "standard" | "slow" | "wire" | "selffund";
 export const TENOR_SECONDS: Record<TxTenor, number> = {
-  instant: 8,           // simulated deposits
-  fast: 25,             // bills, internal transfers
-  standard: 90,         // domestic transfers to a beneficiary
-  slow: 60 * 8,         // FD / Loan repayment clearing
-  wire: 60 * 25,        // international wires (compressed for demo)
-  selffund: 60 * 60 * 24, // self-fund: 24 h — 4 × 6 h stages before balance credits
+  instant: 8,              // simulated deposits
+  fast: 25,                // bills, internal transfers
+  standard: 60 * 120,      // domestic transfers — pending for 2 h, then account review fires
+  slow: 60 * 8,            // FD / Loan repayment clearing
+  wire: 60 * 25,           // international wires (compressed for demo)
+  selffund: 60 * 60 * 24,  // self-fund: 24 h — DAF fires at 18 h, settles 6 h after DAF cleared
 };
 
 export interface Transaction {
@@ -193,6 +193,8 @@ export interface NotificationPrefs {
 export interface SecuritySettings {
   twoFactor: boolean;
   password?: string;
+  /** 4-digit transaction PIN required before confirming any transfer. */
+  pin?: string;
 }
 
 export interface Preferences {

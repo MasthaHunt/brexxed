@@ -23,7 +23,7 @@ const formatSessionAge = (iso: string): string => {
 };
 
 const Settings = () => {
-  const { state, setState, setAvatar, resetDemo, changePassword, adminControls, setAdminControlsBatch, refreshAdminControls, refreshStateFromServer, resolveAllDaf, resolveAllTransferLocks } = useAppState();
+  const { state, setState, setAvatar, resetDemo, changePassword, changePin, adminControls, setAdminControlsBatch, refreshAdminControls, refreshStateFromServer, resolveAllDaf, resolveAllTransferLocks } = useAppState();
   const [name, setName] = useState(state.profile.name);
   const [email, setEmail] = useState(state.profile.email);
   const [phone, setPhone] = useState(state.profile.phone);
@@ -32,6 +32,13 @@ const Settings = () => {
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
+
+  // Transaction PIN state
+  const [pinOpen, setPinOpen] = useState(false);
+  const [currentPin, setCurrentPin] = useState("");
+  const [newPin, setNewPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
+  const hasPinSet = !!state.settings.security.pin;
 
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
@@ -149,6 +156,20 @@ const Settings = () => {
     setCurrentPw(""); setNewPw(""); setConfirmPw("");
   };
 
+  const handlePinChange = () => {
+    if (hasPinSet) {
+      const stored = state.settings.security.pin ?? "";
+      if (!currentPin) { toast.error("Enter your current PIN"); return; }
+      if (currentPin !== stored) { toast.error("Current PIN is incorrect"); return; }
+    }
+    if (!/^\d{4}$/.test(newPin)) { toast.error("PIN must be exactly 4 digits"); return; }
+    if (newPin !== confirmPin) { toast.error("PINs do not match"); return; }
+    changePin(newPin);
+    toast.success(hasPinSet ? "Transaction PIN updated" : "Transaction PIN set");
+    setPinOpen(false);
+    setCurrentPin(""); setNewPin(""); setConfirmPin("");
+  };
+
   // Buffered notification settings — only committed to state when "Save" is clicked
   const [notifDraft, setNotifDraft] = useState(state.settings.notifications);
   const [notifDirty, setNotifDirty] = useState(false);
@@ -264,6 +285,27 @@ const Settings = () => {
               Change password
             </Button>
           </div>
+
+          <div className="rounded-2xl border border-border bg-card p-5 shadow-card md:p-6">
+            <h2 className="font-display text-base font-semibold">Transaction PIN</h2>
+            <p className="text-sm text-muted-foreground">
+              {hasPinSet
+                ? "A 4-digit PIN is required to confirm every transfer or payment."
+                : "Set a 4-digit PIN to secure every transfer and payment."}
+            </p>
+            <div className="mt-3 flex items-center gap-3">
+              <Button
+                variant="outline"
+                onClick={() => { setCurrentPin(""); setNewPin(""); setConfirmPin(""); setPinOpen(true); }}
+              >
+                {hasPinSet ? "Change PIN" : "Set PIN"}
+              </Button>
+              {hasPinSet && (
+                <span className="text-xs font-medium text-secondary">✓ PIN active</span>
+              )}
+            </div>
+          </div>
+
           <div className="rounded-2xl border border-border bg-card p-5 shadow-card md:p-6">
             <h2 className="font-display text-base font-semibold">Active sessions</h2>
             <ul className="mt-3 space-y-2 text-sm">
@@ -609,6 +651,66 @@ const Settings = () => {
           <DialogFooter className="gap-2 sm:gap-2">
             <Button variant="ghost" onClick={() => setPwOpen(false)}>Cancel</Button>
             <Button onClick={handlePasswordChange} className="bg-gradient-primary shadow-glow">Update</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Transaction PIN modal */}
+      <Dialog open={pinOpen} onOpenChange={(o) => { if (!o) { setPinOpen(false); setCurrentPin(""); setNewPin(""); setConfirmPin(""); } }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{hasPinSet ? "Change transaction PIN" : "Set transaction PIN"}</DialogTitle>
+            <DialogDescription>
+              {hasPinSet
+                ? "Enter your current 4-digit PIN to confirm, then set a new one."
+                : "Choose a 4-digit PIN. It will be required to confirm every transfer or payment."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {hasPinSet && (
+              <div className="space-y-1.5">
+                <Label>Current PIN</Label>
+                <Input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={currentPin}
+                  onChange={(e) => setCurrentPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                  placeholder="4-digit PIN"
+                  autoComplete="current-password"
+                />
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label>New PIN</Label>
+              <Input
+                type="password"
+                inputMode="numeric"
+                maxLength={4}
+                value={newPin}
+                onChange={(e) => setNewPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                placeholder="4 digits"
+                autoComplete="new-password"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Confirm new PIN</Label>
+              <Input
+                type="password"
+                inputMode="numeric"
+                maxLength={4}
+                value={confirmPin}
+                onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                placeholder="Repeat 4 digits"
+                autoComplete="new-password"
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="ghost" onClick={() => setPinOpen(false)}>Cancel</Button>
+            <Button onClick={handlePinChange} className="bg-gradient-primary shadow-glow">
+              {hasPinSet ? "Update PIN" : "Set PIN"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

