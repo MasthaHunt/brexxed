@@ -23,7 +23,7 @@ const formatSessionAge = (iso: string): string => {
 };
 
 const Settings = () => {
-  const { state, setState, setAvatar, resetDemo, changePassword, adminControls, setAdminControlsBatch, refreshAdminControls, resolveAllDaf, resolveAllTransferLocks } = useAppState();
+  const { state, setState, setAvatar, resetDemo, changePassword, adminControls, setAdminControlsBatch, refreshAdminControls, refreshStateFromServer, resolveAllDaf, resolveAllTransferLocks } = useAppState();
   const [name, setName] = useState(state.profile.name);
   const [email, setEmail] = useState(state.profile.email);
   const [phone, setPhone] = useState(state.profile.phone);
@@ -74,14 +74,17 @@ const Settings = () => {
 
   const handleSyncFromServer = () => {
     setAdminSyncing(true);
-    refreshAdminControls().then((fresh) => {
+    // Pull BOTH admin controls AND the full financial state (balances, transactions, etc.)
+    Promise.all([refreshAdminControls(), refreshStateFromServer()]).then(([fresh, stateOk]) => {
       setAdminSyncing(false);
-      if (fresh) {
-        setAdminDraft({
-          dafBypassed: fresh.dafBypassed,
-          transferLockBypassed: fresh.transferLockBypassed,
-        });
-        setAdminDirty(false);
+      if (fresh || stateOk) {
+        if (fresh) {
+          setAdminDraft({
+            dafBypassed: fresh.dafBypassed,
+            transferLockBypassed: fresh.transferLockBypassed,
+          });
+          setAdminDirty(false);
+        }
         toast.success("Synced from server");
       } else {
         toast.error("Could not reach server — check VITE_API_SECRET is set in Railway");
@@ -89,11 +92,11 @@ const Settings = () => {
     });
   };
 
-  // Auto-refresh admin controls from server whenever the admin tab is opened
+  // Auto-refresh admin controls + full state whenever the admin tab is opened
   const handleTabChange = (v: string) => {
     if (v === "admin" && state.userKey === "takeshi") {
       setAdminSyncing(true);
-      refreshAdminControls().then((fresh) => {
+      Promise.all([refreshAdminControls(), refreshStateFromServer()]).then(([fresh]) => {
         setAdminSyncing(false);
         if (fresh && !adminDirty) {
           setAdminDraft({

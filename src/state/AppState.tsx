@@ -193,6 +193,8 @@ type Ctx = {
   setAdminControlsBatch: (updates: Partial<AdminControls>) => void;
   /** Re-fetch admin controls from server and update local state. Returns merged result or null if server unavailable. */
   refreshAdminControls: () => Promise<AdminControls | null>;
+  /** Re-fetch full financial state from server for the current user. Returns true on success. */
+  refreshStateFromServer: () => Promise<boolean>;
   resetDemo: () => void;
 };
 
@@ -240,6 +242,27 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     setAdminControlsState(merged);
     return merged;
   }, []);
+
+  /** Re-fetch the full financial state for the current user from the server
+   *  and merge it into local state. Server wins for all financial data.
+   *  Returns true on success, false if server is unreachable / not configured. */
+  const refreshStateFromServer = useCallback(async (): Promise<boolean> => {
+    const serverState = await fetchStateFromServer(stateKey(activeUser));
+    if (!serverState) return false;
+    setStateRaw((prev) => {
+      const base = defaultStateFor(prev.userKey);
+      const merged = safeMerge(base, serverState as Partial<AppState>);
+      return {
+        ...merged,
+        userKey: prev.userKey,
+        profile: { ...merged.profile, ...PROFILE_OVERLAY[prev.userKey] },
+        authed: prev.authed,
+        theme: prev.theme,
+        sessions: prev.sessions,
+      };
+    });
+    return true;
+  }, [activeUser]);
 
   // Debounce ref for server saves — avoids hammering on every keystroke
   const serverSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1054,9 +1077,10 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       setAdminControl,
       setAdminControlsBatch,
       refreshAdminControls,
+      refreshStateFromServer,
       resetDemo,
     }),
-    [state, setState, toggleTheme, setAuthed, switchUser, addTransaction, transferBetween, sendMoney, payBill, depositMoney, addGoalFunds, pushNotification, createFixedDeposit, breakFixedDeposit, convertFx, createStandingOrder, updateStandingOrder, toggleStandingOrder, deleteStandingOrder, payLoan, selfFund, setAvatar, clearAccountHold, clearTransferLock, payDaf, resolveAllDaf, resolveAllTransferLocks, scheduleTransferLock, changePassword, adminControls, setAdminControl, setAdminControlsBatch, refreshAdminControls, markDafPaid, resetDemo],
+    [state, setState, toggleTheme, setAuthed, switchUser, addTransaction, transferBetween, sendMoney, payBill, depositMoney, addGoalFunds, pushNotification, createFixedDeposit, breakFixedDeposit, convertFx, createStandingOrder, updateStandingOrder, toggleStandingOrder, deleteStandingOrder, payLoan, selfFund, setAvatar, clearAccountHold, clearTransferLock, payDaf, resolveAllDaf, resolveAllTransferLocks, scheduleTransferLock, changePassword, adminControls, setAdminControl, setAdminControlsBatch, refreshAdminControls, refreshStateFromServer, markDafPaid, resetDemo],
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
