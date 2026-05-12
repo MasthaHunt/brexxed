@@ -50,7 +50,12 @@ let pool = null;
 // Railway injects either a full MYSQL_URL connection string or individual vars.
 // Support both naming conventions (MYSQLHOST and MYSQL_HOST) so the server
 // works regardless of how the plugin was attached.
-const MYSQL_URL      = process.env.MYSQL_URL ?? process.env.MYSQL_PRIVATE_URL;
+// Prefer the PUBLIC url over the private one — the private URL uses an IPv6
+// ULA address (fd12:…) which can trigger ECONNREFUSED inside some Railway
+// environments. The public URL always resolves over IPv4.
+const MYSQL_URL      = process.env.MYSQL_PUBLIC_URL
+                    ?? process.env.MYSQL_URL
+                    ?? process.env.MYSQL_PRIVATE_URL;
 const MYSQL_HOST     = process.env.MYSQLHOST ?? process.env.MYSQL_HOST;
 const MYSQL_PORT     = Number(process.env.MYSQLPORT ?? process.env.MYSQL_PORT ?? 3306);
 const MYSQL_USER     = process.env.MYSQLUSER ?? process.env.MYSQL_USER;
@@ -60,7 +65,11 @@ const MYSQL_DATABASE = process.env.MYSQLDATABASE ?? process.env.MYSQL_DATABASE;
 const MYSQL_CONFIGURED = !!(MYSQL_URL || MYSQL_HOST);
 
 if (MYSQL_CONFIGURED) {
-  console.log(`MySQL: connecting via ${MYSQL_URL ? "MYSQL_URL" : `${MYSQL_HOST}:${MYSQL_PORT}`}`);
+  const via = process.env.MYSQL_PUBLIC_URL ? "MYSQL_PUBLIC_URL"
+            : process.env.MYSQL_URL        ? "MYSQL_URL"
+            : process.env.MYSQL_PRIVATE_URL ? "MYSQL_PRIVATE_URL"
+            : `${MYSQL_HOST}:${MYSQL_PORT}`;
+  console.log(`MySQL: connecting via ${via}`);
 } else {
   console.warn("MySQL not configured — state sync disabled. Attach Railway's MySQL plugin to enable cross-device sync.");
 }
