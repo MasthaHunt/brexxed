@@ -841,6 +841,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
   const changePassword: Ctx["changePassword"] = useCallback((newPassword) => {
     localStorage.setItem(`vaulta_password_${state.userKey}`, newPassword);
+    // Sync to server so the new password works on all devices immediately
+    saveStateToServer(`vaulta_password_${state.userKey}`, { password: newPassword });
     setState((s) => ({
       ...s,
       settings: { ...s.settings, security: { ...s.settings.security, password: newPassword } },
@@ -1037,6 +1039,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     deleteStateFromServer(stateKey("alex")).catch(() => {});
     deleteStateFromServer("vaulta_state_shared").catch(() => {});
     deleteStateFromServer("vaulta_admin").catch(() => {});
+    deleteStateFromServer("vaulta_password_alex").catch(() => {});
+    deleteStateFromServer("vaulta_password_jamie").catch(() => {});
+    deleteStateFromServer("vaulta_password_takeshi").catch(() => {});
 
     // Navigate to root immediately — full page reload, all React state is torn down.
     window.location.href = "/";

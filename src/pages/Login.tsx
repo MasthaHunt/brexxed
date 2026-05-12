@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Logo } from "@/components/vaulta/Logo";
 import { useAppState } from "@/state/AppState";
+import { fetchStateFromServer, saveStateToServer } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type UserKey = "alex" | "jamie" | "takeshi";
@@ -27,7 +28,7 @@ const USERS: Record<
     user: "jamie",
     name: "James Lilburne",
     email: "james.l@brexledger.com",
-    pass: "Lilburne2026.",
+    pass: "James007.",
   },
   "takeshi.r@brexledger.com": {
     user: "takeshi",
@@ -37,13 +38,15 @@ const USERS: Record<
   },
 };
 
-/** Per-user password key wins over the hardcoded default. */
-const getEffectivePassword = (userKey: UserKey, defaultPass: string): string => {
-  try {
-    return localStorage.getItem(`vaulta_password_${userKey}`) ?? defaultPass;
-  } catch {
-    return defaultPass;
-  }
+/** Read the locally-cached custom password for a user (set via Settings or Forgot). */
+const getLocalCustomPassword = (userKey: UserKey): string | null => {
+  try { return localStorage.getItem(`vaulta_password_${userKey}`); }
+  catch { return null; }
+};
+
+/** Cache a custom password locally so subsequent logins don't need a server round-trip. */
+const cachePasswordLocally = (userKey: UserKey, pw: string) => {
+  try { localStorage.setItem(`vaulta_password_${userKey}`, pw); } catch {}
 };
 
 const Login = () => {
@@ -110,28 +113,61 @@ const Login = () => {
       toast.error("Could not save password. Please try again.");
       return;
     }
+    // Sync to server so the new password works on all devices
+    saveStateToServer(`vaulta_password_${found.user}`, { password: forgotNewPw });
     toast.success("Password updated", { description: "You can now log in with your new password." });
     closeForgot();
   };
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    setTimeout(() => {
-      const found = USERS[email.trim().toLowerCase()];
-      if (found && pass === getEffectivePassword(found.user, found.pass)) {
+
+    const found = USERS[email.trim().toLowerCase()];
+    if (!found) {
+      setLoading(false);
+      setShake(true);
+      toast.error("Invalid credentials", { description: "Please check your email and password and try again." });
+      setTimeout(() => setShake(false), 600);
+      return;
+    }
+
+    const enteredPass = pass;
+
+    // ── Check 1: hardcoded default (always works, any device, no server needed) ──
+    const isDefault = enteredPass === found.pass;
+
+    // ── Check 2: locally cached custom password (fast, no server needed) ────────
+    const localCustom = getLocalCustomPassword(found.user);
+    const isLocalCustom = !!localCustom && enteredPass === localCustom;
+
+    if (isDefault || isLocalCustom) {
+      toast.success("Authenticating…", { description: `Welcome, ${found.name.split(" ")[0]}.` });
+      switchUser(found.user);
+      navigate("/dashboard", { replace: true });
+      return;
+    }
+
+    // ── Check 3: server custom password (new device, nothing cached locally) ────
+    // This lets a password changed on one device work on another device.
+    const serverData = await fetchStateFromServer(`vaulta_password_${found.user}`);
+    const serverCustom = (serverData as { password?: string } | null)?.password ?? null;
+    if (serverCustom) {
+      // Cache it so future logins on this device are instant
+      cachePasswordLocally(found.user, serverCustom);
+      if (enteredPass === serverCustom) {
         toast.success("Authenticating…", { description: `Welcome, ${found.name.split(" ")[0]}.` });
         switchUser(found.user);
         navigate("/dashboard", { replace: true });
-      } else {
-        setLoading(false);
-        setShake(true);
-        toast.error("Invalid credentials", {
-          description: "Please check your email and password and try again.",
-        });
-        setTimeout(() => setShake(false), 600);
+        return;
       }
-    }, 500);
+    }
+
+    // ── All checks failed ────────────────────────────────────────────────────────
+    setLoading(false);
+    setShake(true);
+    toast.error("Invalid credentials", { description: "Please check your email and password and try again." });
+    setTimeout(() => setShake(false), 600);
   };
 
   return (
