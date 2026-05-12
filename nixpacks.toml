@@ -8,8 +8,13 @@ providers = ["node"]
 cmds = ["npm install"]
 
 [phases.build]
-# Remove any Vite build cache before building to ensure a fully fresh bundle.
-cmds = ["rm -rf node_modules/.vite dist && npm run build"]
+# Write VITE_API_SECRET from Railway's injected env var into .env so Vite
+# picks it up at build time (the .env file is gitignored and never committed).
+# Then do a clean build to ensure a fully fresh bundle.
+cmds = [
+  "printf 'VITE_API_SECRET=%s\\n' \"$VITE_API_SECRET\" > .env",
+  "rm -rf node_modules/.vite dist && npm run build"
+]
 
 [start]
 cmd = "node server.js"
