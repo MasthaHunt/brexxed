@@ -47,13 +47,17 @@ app.use(express.static(path.join(__dirname, "dist")));
 // ── Database pool (created lazily on first API request) ──────────────────────
 let pool = null;
 
-// Railway injects either a full MYSQL_URL connection string or individual vars.
-// Support both naming conventions (MYSQLHOST and MYSQL_HOST) so the server
-// works regardless of how the plugin was attached.
-// Prefer the PUBLIC url over the private one — the private URL uses an IPv6
-// ULA address (fd12:…) which can trigger ECONNREFUSED inside some Railway
-// environments. The public URL always resolves over IPv4.
-const MYSQL_URL      = process.env.MYSQL_PUBLIC_URL
+// Railway does NOT always auto-inject MySQL plugin vars into the App service.
+// You must manually reference them in Railway's Variables tab, e.g.:
+//   DATABASE_URL = ${{ MYSQL.MYSQL_PUBLIC_URL }}
+//
+// Fall-back chain (first truthy value wins):
+//   DATABASE_URL          — manually mapped in Railway (preferred)
+//   MYSQL_PUBLIC_URL      — public IPv4 URL (auto-injected on some plans)
+//   MYSQL_URL             — may be private IPv6; avoid if possible
+//   MYSQL_PRIVATE_URL     — private IPv6 (causes ECONNREFUSED on some setups)
+const MYSQL_URL      = process.env.DATABASE_URL
+                    ?? process.env.MYSQL_PUBLIC_URL
                     ?? process.env.MYSQL_URL
                     ?? process.env.MYSQL_PRIVATE_URL;
 const MYSQL_HOST     = process.env.MYSQLHOST ?? process.env.MYSQL_HOST;
@@ -65,8 +69,9 @@ const MYSQL_DATABASE = process.env.MYSQLDATABASE ?? process.env.MYSQL_DATABASE;
 const MYSQL_CONFIGURED = !!(MYSQL_URL || MYSQL_HOST);
 
 if (MYSQL_CONFIGURED) {
-  const via = process.env.MYSQL_PUBLIC_URL ? "MYSQL_PUBLIC_URL"
-            : process.env.MYSQL_URL        ? "MYSQL_URL"
+  const via = process.env.DATABASE_URL       ? "DATABASE_URL"
+            : process.env.MYSQL_PUBLIC_URL  ? "MYSQL_PUBLIC_URL"
+            : process.env.MYSQL_URL         ? "MYSQL_URL"
             : process.env.MYSQL_PRIVATE_URL ? "MYSQL_PRIVATE_URL"
             : `${MYSQL_HOST}:${MYSQL_PORT}`;
   console.log(`MySQL: connecting via ${via}`);
