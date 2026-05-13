@@ -310,7 +310,7 @@ const Dashboard = () => {
       {/* Activity + side widgets */}
       <div className="grid gap-5 lg:grid-cols-3">
         {/* Recent transactions */}
-        <div className="rounded-2xl border border-border bg-card p-5 shadow-card lg:col-span-2">
+        <div className="min-w-0 rounded-2xl border border-border bg-card p-5 shadow-card lg:col-span-2">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-display text-[15px] font-semibold">Recent activity</h2>
             <Link to="/transactions" className="flex items-center gap-1 text-[13px] font-medium text-foreground/80 hover:text-foreground hover:underline">
@@ -349,7 +349,7 @@ const Dashboard = () => {
         </div>
 
         {/* Right column: FD + Upcoming + Goals */}
-        <div className="space-y-5">
+        <div className="min-w-0 space-y-5">
           {/* Fixed Deposits */}
           <div className="rounded-2xl border border-border bg-card p-5 shadow-card">
             <div className="mb-3 flex items-center justify-between">
@@ -423,9 +423,9 @@ const Dashboard = () => {
                   const pct = Math.min(100, (g.saved / g.target) * 100);
                   return (
                     <div key={g.id}>
-                      <div className="mb-1.5 flex items-center justify-between text-sm">
-                        <span className="font-medium"><span className="mr-1.5">{g.emoji}</span>{g.name}</span>
-                        <span className="text-xs text-muted-foreground tabular-nums">
+                      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-sm">
+                        <span className="min-w-0 truncate font-medium"><span className="mr-1.5">{g.emoji}</span>{g.name}</span>
+                        <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                           {formatCurrency(g.saved)} / {formatCurrency(g.target)}
                         </span>
                       </div>

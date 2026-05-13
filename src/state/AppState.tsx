@@ -808,7 +808,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   );
 
   /** On mount, immediately complete any pending self-fund transactions that
-   *  are past their 24 h settlement window (e.g. after a page refresh). */
+   *  are past their 24 h settlement window (e.g. after a page refresh).
+   *  IMPORTANT: Skips any account that still has dafRequired set — those funds
+   *  must NOT settle until the DAF is cleared (via SQL or payDaf/resolveAllDaf). */
   useEffect(() => {
     const totalMs = TENOR_SECONDS.selffund * 1000;
     const now = Date.now();
@@ -824,13 +826,16 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
       let next = { ...prev };
       for (const tx of overdue) {
+        const acc = next.accounts.find((a) => a.id === tx.accountId);
+        // Never auto-settle while DAF is required — DAF clearance owns settlement
+        if (acc?.dafRequired) continue;
+        // Never auto-settle while the dafClearedAt 6 h timer is still pending
+        if (acc?.dafClearedAt) continue;
+
         next = adjustBalance(next, tx.accountId, tx.amount);
         next = {
           ...next,
-          // Place security hold — same as the live 24h callback would do
-          accounts: next.accounts.map((a) =>
-            a.id === tx.accountId ? { ...a, onHold: true } : a,
-          ),
+          // No auto-hold: account review only fires on user-initiated transfers
           transactions: next.transactions.map((t) =>
             t.id === tx.id ? { ...t, status: "completed" as const } : t,
           ),

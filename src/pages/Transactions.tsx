@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Search, Download, Filter, ArrowUpRight, ArrowDownRight, X, CircleCheck, Clock, Loader2 } from "lucide-react";
+import { Search, Download, Filter, ArrowUpRight, ArrowDownRight, X, CircleCheck, Clock, Loader2, AlertTriangle } from "lucide-react";
 import { TENOR_SECONDS, type TxTenor } from "@/state/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -176,10 +176,17 @@ const Transactions = () => {
                           {tx.category}
                         </span>
                         {tx.status === "pending" && (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">
-                            <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                            Pending
-                          </span>
+                          acct?.dafRequired && tx.tenor === "selffund" ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                              <AlertTriangle className="h-2.5 w-2.5" />
+                              DAF Hold
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">
+                              <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                              Pending
+                            </span>
+                          )
                         )}
                       </div>
                       <p className="truncate text-xs text-muted-foreground">
@@ -249,11 +256,33 @@ const Transactions = () => {
               </dl>
 
               {/* Timeline */}
-              <div className="mt-5">
-                <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                  Timeline
-                </p>
-                <Timeline tx={active} />
+              <div className="mt-5 space-y-3">
+                {active.tenor === "selffund" && active.status === "pending" && !!state.accounts.find((a) => a.id === active.accountId)?.dafRequired && (
+                  <div className="flex items-start gap-2.5 rounded-xl border border-amber-400/40 bg-amber-400/10 px-3.5 py-3">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                    <div>
+                      <p className="text-[13px] font-semibold text-amber-700 dark:text-amber-300">
+                        Deposit Activation Fee required
+                      </p>
+                      <p className="mt-0.5 text-[12px] leading-snug text-amber-600/90 dark:text-amber-400/90">
+                        A one-time fee of $2,500 is required before these funds can settle. Processing is paused until the fee is cleared.
+                      </p>
+                    </div>
+                  </div>
+                )}
+                <div>
+                  <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                    Timeline
+                  </p>
+                  <Timeline
+                    tx={active}
+                    dafPaused={
+                      active.tenor === "selffund" &&
+                      active.status === "pending" &&
+                      !!state.accounts.find((a) => a.id === active.accountId)?.dafRequired
+                    }
+                  />
+                </div>
               </div>
 
               <div className="mt-5 space-y-2">
@@ -289,13 +318,13 @@ const Transactions = () => {
  * - Internal transfers / bills use shorter tenors but never instant.
  * Pending stages render an animated skeleton placeholder.
  */
-const Timeline = ({ tx }: { tx: Transaction }) => {
+const Timeline = ({ tx, dafPaused = false }: { tx: Transaction; dafPaused?: boolean }) => {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (tx.status === "completed") return;
+    if (tx.status === "completed" || dafPaused) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [tx.status]);
+  }, [tx.status, dafPaused]);
 
   const inferred: TxTenor =
     tx.tenor ??
@@ -317,14 +346,17 @@ const Timeline = ({ tx }: { tx: Transaction }) => {
   const isWire = inferred === "wire";
   const credit = tx.amount > 0;
 
+  // When DAF is paused, freeze the display at exactly 75% (= the 18 h / 24 h checkpoint).
+  const effectiveNow = dafPaused ? t0 + Math.round(totalMs * 0.75) : now;
+
   const isStageDone = (i: number) => {
     if (tx.status === "completed") return true;
-    return now >= ts[i];
+    return effectiveNow >= ts[i];
   };
   const activeIdx = tx.status === "completed" ? 3 : Math.max(0, offsets.findIndex((_, i) => !isStageDone(i)) - 1);
 
-  const totalElapsed = Math.min(1, Math.max(0, (now - t0) / totalMs));
-  const remainingMs = Math.max(0, totalMs - (now - t0));
+  const totalElapsed = Math.min(1, Math.max(0, (effectiveNow - t0) / totalMs));
+  const remainingMs = Math.max(0, totalMs - (effectiveNow - t0));
 
   const labels = [
     { label: credit ? "Inbound received" : "Initiated", desc: credit ? "Funds detected by the network." : "Brex received your request." },
@@ -346,13 +378,23 @@ const Timeline = ({ tx }: { tx: Transaction }) => {
     <div>
       {tx.status === "pending" && (
         <>
-          <div className="mb-2.5 flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
-            <div className="flex items-center gap-2 text-[12px] font-medium">
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-              {isWire ? "International wire in transit" : "Processing"}
+          {dafPaused ? (
+            <div className="mb-2.5 flex items-center justify-between gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2">
+              <div className="flex items-center gap-2 text-[12px] font-semibold text-amber-700 dark:text-amber-300">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                Paused — DAF fee required
+              </div>
+              <span className="text-[11px] text-amber-600 dark:text-amber-400">Awaiting clearance</span>
             </div>
-            <span className="text-[11px] tabular-nums text-muted-foreground">{fmtRemaining(remainingMs)}</span>
-          </div>
+          ) : (
+            <div className="mb-2.5 flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
+              <div className="flex items-center gap-2 text-[12px] font-medium">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                {isWire ? "International wire in transit" : "Processing"}
+              </div>
+              <span className="text-[11px] tabular-nums text-muted-foreground">{fmtRemaining(remainingMs)}</span>
+            </div>
+          )}
           <div className="mb-3 h-1 overflow-hidden rounded-full bg-muted">
             <motion.div
               className="h-full rounded-full bg-gradient-primary"
@@ -375,6 +417,10 @@ const Timeline = ({ tx }: { tx: Transaction }) => {
                   <span className="flex h-5 w-5 items-center justify-center rounded-full bg-secondary text-secondary-foreground">
                     <CircleCheck className="h-3 w-3" />
                   </span>
+                ) : dafPaused && isCurrent ? (
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full border border-amber-400/60 bg-background text-amber-500">
+                    <AlertTriangle className="h-3 w-3" />
+                  </span>
                 ) : isCurrent ? (
                   <span className="flex h-5 w-5 items-center justify-center rounded-full border border-primary/60 bg-background text-primary">
                     <Loader2 className="h-3 w-3 animate-spin" />
@@ -395,6 +441,8 @@ const Timeline = ({ tx }: { tx: Transaction }) => {
                   </p>
                   {done ? (
                     <span className="text-[10.5px] tabular-nums text-muted-foreground">{fmt(ts[i])}</span>
+                  ) : dafPaused && isCurrent ? (
+                    <span className="text-[10.5px] font-medium uppercase tracking-wider text-amber-600 dark:text-amber-400">Paused</span>
                   ) : isCurrent ? (
                     <span className="text-[10.5px] font-medium uppercase tracking-wider text-primary">In progress</span>
                   ) : (
