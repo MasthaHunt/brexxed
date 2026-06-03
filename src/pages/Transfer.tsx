@@ -178,8 +178,12 @@ const Transfer = () => {
     return null;
   };
 
+  const MIN_SEND = 1000;        // minimum send amount — anything below is rejected
+  const HOLD_THRESHOLD = 1000; // transfers at or above this go through pending → hold flow
+
   const validateSend = () => {
     if (sendAmtNum <= 0) return "Enter an amount greater than 0";
+    if (sendAmtNum < MIN_SEND) return `Minimum transfer amount is ${formatCurrency(MIN_SEND)}`;
     if (intlMode) {
       const name = recipientName.trim();
       if (name.length < 3) return "Beneficiary full name must be at least 3 characters";
@@ -250,10 +254,15 @@ const Transfer = () => {
     return 1400; // bills
   };
 
+  const resetForm = () => {
+    setSendAmount(""); setSendNote(""); setRecipient(""); setSelectedBenef(null);
+    setIntlBank(""); setIntlSwift(""); setIntlIban("");
+    setBillAccount(""); setBillAmount("");
+  };
+
   // The actual transfer execution — called after PIN is verified
   const executeTransaction = async () => {
     const activeAmount = mode === "send" ? sendAmtNum : billAmtNum;
-    const HOLD_THRESHOLD = 1000;
 
     setLoaderLabel(
       mode === "send" && intlMode ? "Sending international wire…"
@@ -261,59 +270,55 @@ const Transfer = () => {
         : "Processing payment…",
     );
     setLoaderOpen(true);
-
-    // Simulate brief processing delay before hold check
     await new Promise<void>((resolve) => setTimeout(resolve, loaderDuration()));
 
-    // ── Compliance hold path: any transfer > $1,000 ──────────────────────────
-    if (activeAmount > HOLD_THRESHOLD) {
+    // ── Compliance hold path: any transfer ≥ $1,000 ─────────────────────────
+    // The tx is created as PENDING and looks like a normal transfer to the user.
+    // After 1 hour the hold triggers in the background: tx flips to "held",
+    // account is locked, and the in-person verification notification fires.
+    if (activeAmount >= HOLD_THRESHOLD) {
       const benefName = mode === "send"
         ? (intlMode ? `${recipientName} (${intlCurrency})` : recipientName)
         : `${activeBiller.name} Bill`;
-      await placeHold(state.userKey, fromId, activeAmount, benefName, DEFAULT_HOLD_REASON);
+
+      // Fire-and-forget — creates pending tx + schedules 1-hour hold trigger
+      placeHold(state.userKey, fromId, activeAmount, benefName, DEFAULT_HOLD_REASON, 60 * 60 * 1000);
+
+      // Show normal "Transfer initiated" notification and success animation
+      pushNotification({
+        type: "transaction",
+        title: intlMode ? "International wire initiated" : "Transfer initiated",
+        body: intlMode
+          ? `${formatCurrency(activeAmount)} → ${benefName} is now en route. SWIFT clearing 1–3 business days.`
+          : `${formatCurrency(activeAmount)} to ${benefName} is processing.`,
+      });
+
       setLoaderOpen(false);
-      setHeldAlertOpen(true);
+      setSuccessOpen(true);
+      setTimeout(() => { setSuccessOpen(false); resetForm(); }, 1800);
       return;
     }
 
-    // ── Normal transfer path ─────────────────────────────────────────────────
+    // ── Normal transfer path (below threshold — not reachable given $1k min) ─
     if (mode === "send") {
       if (intlMode) {
         const note = `Intl wire · ${intlBank} · ${intlMeta.symbol}${intlConverted.toLocaleString()} ${intlCurrency} · SWIFT ${intlSwift.toUpperCase()}${sendNote ? " · " + sendNote : ""}`;
         sendMoney(fromId, `${recipientName} (${intlCurrency})`, sendAmtNum, note, "wire");
         sendMoney(fromId, "International Wire Fee", INTL_FEE, `Wire fee for ${intlCurrency} transfer to ${intlBank}`, "instant");
-        pushNotification({
-          type: "transaction",
-          title: "International wire initiated",
-          body: `${formatCurrency(sendAmtNum)} → ${recipientName} (${intlCurrency}) is now en route. SWIFT clearing 1–3 business days.`,
-        });
+        pushNotification({ type: "transaction", title: "International wire initiated", body: `${formatCurrency(sendAmtNum)} → ${recipientName} (${intlCurrency}) is now en route. SWIFT clearing 1–3 business days.` });
       } else {
         sendMoney(fromId, recipientName, sendAmtNum, sendNote || undefined, "standard");
-        pushNotification({
-          type: "transaction",
-          title: "Transfer initiated",
-          body: `${formatCurrency(sendAmtNum)} to ${recipientName} is processing.`,
-        });
+        pushNotification({ type: "transaction", title: "Transfer initiated", body: `${formatCurrency(sendAmtNum)} to ${recipientName} is processing.` });
       }
     }
     if (mode === "bills") {
       payBill(fromId, activeBiller.name, billAmtNum, "fast");
-      pushNotification({
-        type: "transaction",
-        title: `${activeBiller.name} bill scheduled`,
-        body: `${formatCurrency(billAmtNum)} payment to ${activeBiller.name} is being processed.`,
-      });
+      pushNotification({ type: "transaction", title: `${activeBiller.name} bill scheduled`, body: `${formatCurrency(billAmtNum)} payment to ${activeBiller.name} is being processed.` });
     }
-    // Schedule 2h post-transfer account review lock (unless bypassed by admin)
     scheduleTransferLock(fromId);
     setLoaderOpen(false);
     setSuccessOpen(true);
-    setTimeout(() => {
-      setSuccessOpen(false);
-      setSendAmount(""); setSendNote(""); setRecipient(""); setSelectedBenef(null);
-      setIntlBank(""); setIntlSwift(""); setIntlIban("");
-      setBillAccount(""); setBillAmount("");
-    }, 1800);
+    setTimeout(() => { setSuccessOpen(false); resetForm(); }, 1800);
   };
 
   /** Step 1: Close review dialog and open PIN dialog (or skip PIN if none set). */

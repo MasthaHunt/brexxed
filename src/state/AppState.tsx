@@ -215,13 +215,14 @@ type Ctx = {
   securityHolds: SecurityHoldRecord[];
   /** Re-fetch all holds from server and update local list. */
   refreshSecurityHolds: () => Promise<SecurityHoldRecord[]>;
-  /** Place a compliance hold on any account. Creates a held tx + locks the account. */
+  /** Place a compliance hold on any account. Creates a pending tx that flips to held after delayMs (default 1 h). */
   placeHold: (
     userKey: string,
     accountId: string,
     amount: number,
     beneficiaryName: string,
     reason?: string,
+    delayMs?: number,
   ) => Promise<void>;
   /** Clear a compliance hold (Takeshi only). Updates server + local state. */
   clearHold: (userKey: string, accountId: string) => Promise<void>;
@@ -315,41 +316,98 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     return holds;
   }, []);
 
+  /**
+   * Place a compliance hold on a transfer.
+   *
+   * Phase 1 (immediate): creates a PENDING transaction and deducts the balance,
+   * exactly like a normal transfer — the user sees "Processing" in their history.
+   *
+   * Phase 2 (after delayMs, default 1 hour): flips the tx to "held", locks the
+   * account, persists the hold to the server, and pushes the in-person
+   * verification notification to the user's inbox.
+   *
+   * For admin test controls, pass delayMs = 0 to trigger immediately.
+   */
   const placeHold = useCallback(async (
     userKey: string,
     accountId: string,
     amount: number,
     beneficiaryName: string,
     reason = DEFAULT_HOLD_REASON,
+    delayMs = 60 * 60 * 1000, // 1 hour default
   ): Promise<void> => {
+    if (amount <= 0) return; // manual holds from admin (amount = 0) skip the tx
+
     const ref = `SND-${Math.floor(Math.random() * 90000 + 10000)}`;
-    const heldTx: Transaction = {
-      id: `t-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      date: new Date().toISOString(),
-      merchant: `Sent to ${beneficiaryName}`,
-      category: "Transfers",
-      amount: -amount,
-      accountId,
-      status: "held",
-      reference: ref,
-      securityHoldReason: reason,
-    };
-    // Only update local state when acting on the current user's own account
+    const txId = `t-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    // ── Phase 1: create pending tx + deduct balance immediately ─────────────
     if (userKey === activeUser) {
-      setStateRaw((s) => ({
-        ...s,
-        transactions: [heldTx, ...s.transactions],
-        accounts: s.accounts.map((a) =>
-          a.id === accountId ? { ...a, securityHeld: true } : a,
-        ),
-      }));
+      const pendingTx: Transaction = {
+        id: txId,
+        date: new Date().toISOString(),
+        merchant: `Sent to ${beneficiaryName}`,
+        category: "Transfers",
+        amount: -amount,
+        accountId,
+        status: "pending",
+        reference: ref,
+        securityHoldReason: reason,
+      };
+      setStateRaw((s) => {
+        const next = {
+          ...s,
+          accounts: s.accounts.map((a) =>
+            a.id === accountId ? { ...a, balance: +(a.balance - amount).toFixed(2) } : a,
+          ),
+          transactions: [pendingTx, ...s.transactions],
+        };
+        return next;
+      });
     }
-    // Persist hold to server (cross-device authoritative source)
-    await placeSecurityHoldApi(userKey, accountId, reason);
-    // Refresh admin holds list
-    const holds = await fetchSecurityHolds();
-    setSecurityHolds(holds);
-  }, [activeUser]);
+
+    // ── Phase 2: after delayMs, flip to held + lock account + notify ────────
+    const triggerHold = async () => {
+      if (userKey === activeUser) {
+        setStateRaw((s) => ({
+          ...s,
+          transactions: s.transactions.map((t) =>
+            t.id === txId
+              ? { ...t, status: "held" as const, securityHoldReason: reason }
+              : t,
+          ),
+          accounts: s.accounts.map((a) =>
+            a.id === accountId ? { ...a, securityHeld: true } : a,
+          ),
+        }));
+        // In-person verification notification fires when the hold triggers
+        setState((s) => ({
+          ...s,
+          notifications: [
+            {
+              id: `n-hold-${Date.now()}`,
+              title: "Transaction Under Compliance Review — Urgent Action Required",
+              body: reason,
+              type: "security" as const,
+              date: new Date().toISOString(),
+              read: false,
+            },
+            ...s.notifications,
+          ],
+        }));
+      }
+      // Persist to server + refresh admin hold list
+      await placeSecurityHoldApi(userKey, accountId, reason);
+      const holds = await fetchSecurityHolds();
+      setSecurityHolds(holds);
+    };
+
+    if (delayMs <= 0) {
+      await triggerHold();
+    } else {
+      setTimeout(triggerHold, delayMs);
+    }
+  }, [activeUser, setState]);
 
   const clearHold = useCallback(async (userKey: string, accountId: string): Promise<void> => {
     const ok = await clearSecurityHoldApi(userKey, accountId, "takeshi");
