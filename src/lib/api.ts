@@ -7,13 +7,17 @@
  * state lives in the database, not localStorage).
  */
 
-const API_URL = "/api/state";
+import type { SecurityHoldRecord } from "@/state/types";
+
+export type { SecurityHoldRecord };
+
+const API_URL   = "/api/state";
+const HOLD_URL  = "/api/hold";
+const HOLDS_URL = "/api/holds";
 
 /**
  * The shared secret that gates the API.
- * Must match API_SECRET in public/api/config.php.
- * Set VITE_API_SECRET in your .env file before building:
- *   echo "VITE_API_SECRET=your-secret-here" >> .env
+ * Set VITE_API_SECRET in your .env file before building.
  */
 const API_SECRET: string =
   (import.meta.env.VITE_API_SECRET as string | undefined) ?? "";
@@ -22,14 +26,15 @@ const headers = (): HeadersInit => ({
   "X-API-Secret": API_SECRET,
 });
 
-/** Fetch stored state for a slot key.  Returns null if the slot is empty or
- *  the server is unavailable. */
+// ── State sync ────────────────────────────────────────────────────────────────
+
+/** Fetch stored state for a slot key. Returns null if the slot is empty or unreachable. */
 export async function fetchStateFromServer(key: string): Promise<unknown | null> {
-  if (!API_SECRET) return null; // not configured — skip silently
+  if (!API_SECRET) return null;
   try {
     const res = await fetch(`${API_URL}?key=${encodeURIComponent(key)}`, {
       headers: headers(),
-      signal: AbortSignal.timeout(8000), // 8 s timeout
+      signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return null;
     const data = (await res.json()) as { state?: unknown };
@@ -39,7 +44,7 @@ export async function fetchStateFromServer(key: string): Promise<unknown | null>
   }
 }
 
-/** Persist state for a slot key.  Fires-and-forgets — errors are swallowed. */
+/** Persist state for a slot key. Fires-and-forgets — errors are swallowed. */
 export async function saveStateToServer(key: string, state: unknown): Promise<void> {
   if (!API_SECRET) return;
   try {
@@ -70,17 +75,13 @@ export async function deleteStateFromServer(key: string): Promise<void> {
 
 // ── Security Hold API ─────────────────────────────────────────────────────────
 
-import type { SecurityHoldRecord } from "@/state/types";
-export type { SecurityHoldRecord };
-
-const HOLD_URL = "/api/hold";
-const HOLDS_URL = "/api/holds";
-
 /** Fetch all active holds (admin view). Optionally filter by userKey. */
 export async function fetchSecurityHolds(userKey?: string): Promise<SecurityHoldRecord[]> {
   if (!API_SECRET) return [];
   try {
-    const url = userKey ? `${HOLDS_URL}?userKey=${encodeURIComponent(userKey)}` : HOLDS_URL;
+    const url = userKey
+      ? `${HOLDS_URL}?userKey=${encodeURIComponent(userKey)}`
+      : HOLDS_URL;
     const res = await fetch(url, { headers: headers(), signal: AbortSignal.timeout(8000) });
     if (!res.ok) return [];
     const data = (await res.json()) as { holds?: SecurityHoldRecord[] };
