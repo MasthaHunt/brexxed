@@ -9,6 +9,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { useAppState, DEFAULT_HOLD_REASON } from "@/state/AppState";
+import { saveStateToServer } from "@/lib/api";
+import { jamieState, takeshiState } from "@/state/mockData";
 import type { SecurityHoldRecord } from "@/state/types";
 
 /** Returns a human-readable relative age for a session timestamp. */
@@ -44,6 +46,8 @@ const Settings = () => {
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
   const canReset = state.userKey !== "jamie";
+
+  const [reseeding, setReseeding] = useState(false);
 
   // Security holds admin state
   const [holdsLoading, setHoldsLoading] = useState(false);
@@ -828,6 +832,48 @@ const Settings = () => {
                 </div>
 
               </div>
+            </div>
+
+            {/* ── Reseed James & Takeshi ─────────────────────────────────── */}
+            <div className="rounded-2xl border border-border bg-card p-5 shadow-card md:p-6">
+              <h2 className="font-display text-base font-semibold">Reseed James & Takeshi</h2>
+              <p className="text-[12.5px] text-muted-foreground">
+                Writes the canonical default state for James and Takeshi to the server — clears the
+                $200,000 balance, posts the QFS withdrawal transaction, and adds the DAF clearance +
+                in-person verification notifications. Marcus's account is not affected.
+                Users will see the updated state on their next login or page refresh.
+              </p>
+              <div className="mt-4 space-y-2 rounded-xl border border-border bg-muted/20 p-4 text-[12px] text-muted-foreground">
+                <p>✓ Accounts reset to <span className="font-semibold text-foreground">$0.00</span></p>
+                <p>✓ Transaction: <span className="font-semibold text-foreground">WITHDRAWAL FROM QFS INVESTMENTS — $200,000.00</span></p>
+                <p>✓ Notification: DAF fee confirmed & funds settled</p>
+                <p>✓ Notification: Mandatory in-person verification with document checklist</p>
+              </div>
+              <Button
+                className="mt-4 bg-gradient-primary shadow-glow"
+                disabled={reseeding}
+                onClick={async () => {
+                  setReseeding(true);
+                  try {
+                    // Strip sessions (local-only) and identity fields before saving
+                    const { sessions: _js, ...jamieNoSessions } = jamieState;
+                    const { sessions: _ts, ...takeshiNoSessions } = takeshiState;
+                    const jamieToSave = { ...jamieNoSessions, profile: { phone: jamieState.profile.phone, avatarUrl: jamieState.profile.avatarUrl } };
+                    const takeshiToSave = { ...takeshiNoSessions, profile: { phone: takeshiState.profile.phone, avatarUrl: takeshiState.profile.avatarUrl } };
+                    await Promise.all([
+                      saveStateToServer("vaulta_state_jamie", jamieToSave),
+                      saveStateToServer("vaulta_state_takeshi", takeshiToSave),
+                    ]);
+                    toast.success("James & Takeshi reseeded on server — they'll see updated state on next login");
+                  } catch {
+                    toast.error("Reseed failed — check server connection");
+                  } finally {
+                    setReseeding(false);
+                  }
+                }}
+              >
+                {reseeding ? "Reseeding…" : "Reseed James & Takeshi now"}
+              </Button>
             </div>
 
           </TabsContent>

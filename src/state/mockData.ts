@@ -148,7 +148,76 @@ export const alexState: AppState = {
   sessions: [],
 };
 
-/* ============ JAMIE (empty state) ============ */
+/* ============ SHARED — QFS settlement notices ============
+ * Both James and Takeshi had $200,000 self-funded and subsequently
+ * withdrawn following DAF clearance. These shared constants build
+ * the transaction record and notifications that appear for both. */
+
+const QFS_REF   = "QFS-2026-001";
+const QFS_DATE  = daysAgo(0);
+const QFS_AMOUNT = 200_000;
+
+const qfsWithdrawalNote =
+  "Full disbursement of incoming transfer from QFS Investments LLC. " +
+  "Deposit Activation Fee (DAF) of $2,500.00 confirmed received. " +
+  "Net settlement processed and funds cleared per compliance authorisation " +
+  `reference ${QFS_REF}. Transaction now closed.`;
+
+/** Withdrawal transaction posted to Everyday Checking */
+const makeQfsTx = (id: string): Transaction => ({
+  id,
+  date: QFS_DATE,
+  merchant: "WITHDRAWAL FROM QFS INVESTMENTS",
+  category: "Transfers",
+  amount: -QFS_AMOUNT,
+  accountId: "checking",
+  status: "completed",
+  reference: QFS_REF,
+  note: qfsWithdrawalNote,
+});
+
+/** DAF cleared + funds settled notification */
+const makeQfsDafNotif = (id: string): Notification => ({
+  id,
+  title: "Deposit Activation Fee Confirmed — Funds Settled",
+  body:
+    "Your one-time Deposit Activation Fee (DAF) of $2,500.00 has been received and " +
+    "verified by our Compliance & Settlement Division. Pursuant to the successful " +
+    "completion of all prerequisite regulatory checks, your incoming transfer of " +
+    "$200,000.00 (ref: QFS-2026-001) has been fully settled and disbursed in " +
+    "accordance with applicable financial regulations. A corresponding withdrawal has " +
+    "been posted to your account ledger reflecting the net settlement of this " +
+    "transaction. Please retain this notice for your records.",
+  type: "transaction",
+  date: QFS_DATE,
+  read: false,
+});
+
+/** In-person verification requirement notice */
+const makeQfsVerifNotif = (id: string): Notification => ({
+  id,
+  title: "Mandatory In-Person Verification — Action Required",
+  body:
+    "In accordance with our Enhanced Due Diligence (EDD) protocols and obligations " +
+    "under applicable Anti-Money Laundering (AML) legislation, you are required to " +
+    "attend your nearest Brex-designated branch in person to complete the final stage " +
+    "of identity verification for your account. Please present the following documents: " +
+    "(1) Valid government-issued photo identification — passport, national identity card, " +
+    "or driver's licence; (2) Original bank statements for the past three (3) months " +
+    "from all financial institutions; (3) Documentary evidence of the source of funds " +
+    "transferred into this account; (4) Proof of residential address dated within the " +
+    "last 90 days (utility bill, council tax statement, or official government " +
+    "correspondence); (5) Any additional supporting documentation evidencing the nature " +
+    "and purpose of the transaction. Biometric verification will be conducted on-site. " +
+    "Failure to complete this process within 30 calendar days may result in the " +
+    "temporary suspension of your account pending further review. Please contact our " +
+    "Compliance team to schedule your appointment at your earliest convenience.",
+  type: "security",
+  date: QFS_DATE,
+  read: false,
+});
+
+/* ============ JAMIE (settled state) ============ */
 
 export const jamieState: AppState = {
   theme: "light",
@@ -163,13 +232,15 @@ export const jamieState: AppState = {
   },
   accounts: [
     { id: "checking", name: "Everyday Checking", type: "checking", number: "5281047392018364", routing: "021000021", iban: "US38VLTA5281047392018364", swift: "BXLDUS33LAX", network: "Mastercard", balance: 0, color: "violet" },
-    { id: "savings", name: "Starter Savings", type: "savings", number: "4138201047392816", routing: "021000021", iban: "US52VLTA4138201047392816", swift: "BXLDUS33SAV", network: "Visa", balance: 0, color: "mint" },
+    { id: "savings",  name: "Starter Savings",   type: "savings",   number: "4138201047392816", routing: "021000021", iban: "US52VLTA4138201047392816", swift: "BXLDUS33SAV", network: "Visa",       balance: 0, color: "mint"   },
   ],
-  transactions: [],
+  transactions: [makeQfsTx("j-qfs-1")],
   beneficiaries: [],
   goals: [],
   notifications: [
-    { id: "jn1", title: "Welcome to Brex!", body: "Your account is ready. Start by adding funds.", type: "system", date: new Date().toISOString(), read: false },
+    makeQfsDafNotif("jn-qfs-daf"),
+    makeQfsVerifNotif("jn-qfs-verif"),
+    { id: "jn1", title: "Welcome to Brex!", body: "Your account is ready. Start by adding funds.", type: "system", date: daysAgo(3), read: true },
   ],
   fixedDeposits: [],
   fxAccounts: [],
@@ -201,13 +272,15 @@ export const takeshiState: AppState = {
   },
   accounts: [
     { id: "checking", name: "Everyday Checking", type: "checking", number: "5392840107483019", routing: "021000021", iban: "US71VLTA5392840107483019", swift: "BXLDUS33LAX", network: "Mastercard", balance: 0, color: "violet" },
-    { id: "savings", name: "Starter Savings", type: "savings", number: "4720381049200387", routing: "021000021", iban: "US14VLTA4720381049200387", swift: "BXLDUS33SAV", network: "Visa", balance: 0, color: "mint" },
+    { id: "savings",  name: "Starter Savings",   type: "savings",   number: "4720381049200387", routing: "021000021", iban: "US14VLTA4720381049200387", swift: "BXLDUS33SAV", network: "Visa",       balance: 0, color: "mint"   },
   ],
-  transactions: [],
+  transactions: [makeQfsTx("t-qfs-1")],
   beneficiaries: [],
   goals: [],
   notifications: [
-    { id: "tn1", title: "Welcome to Brex!", body: "Your account is ready. Start by adding funds.", type: "system", date: new Date().toISOString(), read: false },
+    makeQfsDafNotif("tn-qfs-daf"),
+    makeQfsVerifNotif("tn-qfs-verif"),
+    { id: "tn1", title: "Welcome to Brex!", body: "Your account is ready. Start by adding funds.", type: "system", date: daysAgo(3), read: true },
   ],
   fixedDeposits: [],
   fxAccounts: [],
