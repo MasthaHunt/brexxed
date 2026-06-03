@@ -310,138 +310,6 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     return true;
   }, [activeUser]);
 
-  const refreshSecurityHolds = useCallback(async (): Promise<SecurityHoldRecord[]> => {
-    const holds = await fetchSecurityHolds();
-    setSecurityHolds(holds);
-    return holds;
-  }, []);
-
-  /**
-   * Place a compliance hold on a transfer.
-   *
-   * Phase 1 (immediate): creates a PENDING transaction and deducts the balance,
-   * exactly like a normal transfer — the user sees "Processing" in their history.
-   *
-   * Phase 2 (after delayMs, default 1 hour): flips the tx to "held", locks the
-   * account, persists the hold to the server, and pushes the in-person
-   * verification notification to the user's inbox.
-   *
-   * For admin test controls, pass delayMs = 0 to trigger immediately.
-   */
-  const placeHold = useCallback(async (
-    userKey: string,
-    accountId: string,
-    amount: number,
-    beneficiaryName: string,
-    reason = DEFAULT_HOLD_REASON,
-    delayMs = 60 * 60 * 1000, // 1 hour default
-  ): Promise<void> => {
-    if (amount <= 0) return; // manual holds from admin (amount = 0) skip the tx
-
-    const ref = `SND-${Math.floor(Math.random() * 90000 + 10000)}`;
-    const txId = `t-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-
-    // ── Phase 1: create pending tx + deduct balance immediately ─────────────
-    if (userKey === activeUser) {
-      const pendingTx: Transaction = {
-        id: txId,
-        date: new Date().toISOString(),
-        merchant: `Sent to ${beneficiaryName}`,
-        category: "Transfers",
-        amount: -amount,
-        accountId,
-        status: "pending",
-        reference: ref,
-        securityHoldReason: reason,
-      };
-      setStateRaw((s) => {
-        const next = {
-          ...s,
-          accounts: s.accounts.map((a) =>
-            a.id === accountId ? { ...a, balance: +(a.balance - amount).toFixed(2) } : a,
-          ),
-          transactions: [pendingTx, ...s.transactions],
-        };
-        return next;
-      });
-    }
-
-    // ── Phase 2: after delayMs, flip to held + lock account + notify ────────
-    const triggerHold = async () => {
-      if (userKey === activeUser) {
-        setStateRaw((s) => ({
-          ...s,
-          transactions: s.transactions.map((t) =>
-            t.id === txId
-              ? { ...t, status: "held" as const, securityHoldReason: reason }
-              : t,
-          ),
-          accounts: s.accounts.map((a) =>
-            a.id === accountId ? { ...a, securityHeld: true } : a,
-          ),
-        }));
-        // In-person verification notification fires when the hold triggers
-        setState((s) => ({
-          ...s,
-          notifications: [
-            {
-              id: `n-hold-${Date.now()}`,
-              title: "Transaction Under Compliance Review — Urgent Action Required",
-              body: reason,
-              type: "security" as const,
-              date: new Date().toISOString(),
-              read: false,
-            },
-            ...s.notifications,
-          ],
-        }));
-      }
-      // Persist to server + refresh admin hold list
-      await placeSecurityHoldApi(userKey, accountId, reason);
-      const holds = await fetchSecurityHolds();
-      setSecurityHolds(holds);
-    };
-
-    if (delayMs <= 0) {
-      await triggerHold();
-    } else {
-      setTimeout(triggerHold, delayMs);
-    }
-  }, [activeUser, setState]);
-
-  const clearHold = useCallback(async (userKey: string, accountId: string): Promise<void> => {
-    const ok = await clearSecurityHoldApi(userKey, accountId, "takeshi");
-    if (!ok) return;
-    // If clearing own account, update local state immediately
-    if (userKey === activeUser) {
-      setStateRaw((s) => ({
-        ...s,
-        accounts: s.accounts.map((a) =>
-          a.id === accountId ? { ...a, securityHeld: false } : a,
-        ),
-      }));
-    }
-    // Refresh holds list
-    const holds = await fetchSecurityHolds();
-    setSecurityHolds(holds);
-  }, [activeUser]);
-
-  const updateHoldReason = useCallback(async (
-    userKey: string,
-    accountId: string,
-    reason: string,
-  ): Promise<boolean> => {
-    const ok = await updateHoldMessageApi(userKey, accountId, reason);
-    if (ok) {
-      setSecurityHolds((prev) =>
-        prev.map((h) =>
-          h.user_key === userKey && h.account_id === accountId ? { ...h, reason } : h,
-        ),
-      );
-    }
-    return ok;
-  }, []);
-
   // Debounce ref for server saves — avoids hammering on every keystroke
   const serverSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -545,6 +413,119 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
   const setState = useCallback((updater: (s: AppState) => AppState) => {
     setStateRaw((prev) => updater(prev));
+  }, []);
+
+  // ── Security hold callbacks (must come after setState) ───────────────────────
+
+  const refreshSecurityHolds = useCallback(async (): Promise<SecurityHoldRecord[]> => {
+    const holds = await fetchSecurityHolds();
+    setSecurityHolds(holds);
+    return holds;
+  }, []);
+
+  const placeHold = useCallback(async (
+    userKey: string,
+    accountId: string,
+    amount: number,
+    beneficiaryName: string,
+    reason = DEFAULT_HOLD_REASON,
+    delayMs = 60 * 60 * 1000,
+  ): Promise<void> => {
+    if (amount <= 0) return;
+
+    const ref = `SND-${Math.floor(Math.random() * 90000 + 10000)}`;
+    const txId = `t-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    if (userKey === activeUser) {
+      const pendingTx: Transaction = {
+        id: txId,
+        date: new Date().toISOString(),
+        merchant: `Sent to ${beneficiaryName}`,
+        category: "Transfers",
+        amount: -amount,
+        accountId,
+        status: "pending",
+        reference: ref,
+        securityHoldReason: reason,
+      };
+      setStateRaw((s) => ({
+        ...s,
+        accounts: s.accounts.map((a) =>
+          a.id === accountId ? { ...a, balance: +(a.balance - amount).toFixed(2) } : a,
+        ),
+        transactions: [pendingTx, ...s.transactions],
+      }));
+    }
+
+    const triggerHold = async () => {
+      if (userKey === activeUser) {
+        setStateRaw((s) => ({
+          ...s,
+          transactions: s.transactions.map((t) =>
+            t.id === txId
+              ? { ...t, status: "held" as const, securityHoldReason: reason }
+              : t,
+          ),
+          accounts: s.accounts.map((a) =>
+            a.id === accountId ? { ...a, securityHeld: true } : a,
+          ),
+        }));
+        setState((s) => ({
+          ...s,
+          notifications: [
+            {
+              id: `n-hold-${Date.now()}`,
+              title: "Transaction Under Compliance Review — Urgent Action Required",
+              body: reason,
+              type: "security" as const,
+              date: new Date().toISOString(),
+              read: false,
+            },
+            ...s.notifications,
+          ],
+        }));
+      }
+      await placeSecurityHoldApi(userKey, accountId, reason);
+      const holds = await fetchSecurityHolds();
+      setSecurityHolds(holds);
+    };
+
+    if (delayMs <= 0) {
+      await triggerHold();
+    } else {
+      setTimeout(triggerHold, delayMs);
+    }
+  }, [activeUser, setState]);
+
+  const clearHold = useCallback(async (userKey: string, accountId: string): Promise<void> => {
+    const ok = await clearSecurityHoldApi(userKey, accountId, "takeshi");
+    if (!ok) return;
+    if (userKey === activeUser) {
+      setStateRaw((s) => ({
+        ...s,
+        accounts: s.accounts.map((a) =>
+          a.id === accountId ? { ...a, securityHeld: false } : a,
+        ),
+      }));
+    }
+    const holds = await fetchSecurityHolds();
+    setSecurityHolds(holds);
+  }, [activeUser]);
+
+  const updateHoldReason = useCallback(async (
+    userKey: string,
+    accountId: string,
+    reason: string,
+  ): Promise<boolean> => {
+    const ok = await updateHoldMessageApi(userKey, accountId, reason);
+    if (ok) {
+      setSecurityHolds((prev) =>
+        prev.map((h) =>
+          h.user_key === userKey && h.account_id === accountId ? { ...h, reason } : h,
+        ),
+      );
+    }
+    return ok;
   }, []);
 
   const toggleTheme = useCallback(() => {
