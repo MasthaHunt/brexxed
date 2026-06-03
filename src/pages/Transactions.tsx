@@ -175,6 +175,12 @@ const Transactions = () => {
                         <span className="hidden rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground sm:inline">
                           {tx.category}
                         </span>
+                        {tx.status === "held" && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-destructive">
+                            <AlertTriangle className="h-2.5 w-2.5" />
+                            Under Review
+                          </span>
+                        )}
                         {tx.status === "pending" && (
                           acct?.dafRequired && tx.tenor === "selffund" ? (
                             <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">
@@ -238,9 +244,11 @@ const Transactions = () => {
                   <dd className="inline-flex items-center gap-1.5 font-medium capitalize">
                     <span className={cn(
                       "h-1.5 w-1.5 rounded-full",
-                      active.status === "completed" ? "bg-secondary" : "bg-primary animate-pulse",
+                      active.status === "completed" ? "bg-secondary"
+                      : active.status === "held" ? "bg-destructive"
+                      : "bg-primary animate-pulse",
                     )} />
-                    {active.status}
+                    {active.status === "held" ? "Under Review" : active.status}
                   </dd>
                 </div>
                 <div className="flex items-center justify-between">
@@ -257,6 +265,25 @@ const Transactions = () => {
 
               {/* Timeline */}
               <div className="mt-5 space-y-3">
+                {active.status === "held" && (
+                  <div className="space-y-3">
+                    <div className="flex items-start gap-2.5 rounded-xl border border-destructive/40 bg-destructive/10 px-3.5 py-3">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                      <div>
+                        <p className="text-[13px] font-semibold text-destructive">
+                          Transaction Under Compliance Review
+                        </p>
+                        <p className="mt-1 text-[12px] leading-snug text-muted-foreground">
+                          {active.securityHoldReason ?? "This transaction has been placed under a mandatory compliance review. Please visit your nearest branch with valid identification to resolve."}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-destructive/20 bg-muted/30 px-4 py-3 text-[12px] text-muted-foreground">
+                      <p className="font-semibold uppercase tracking-wider text-destructive/80">Required Action</p>
+                      <p className="mt-1">Present a valid government-issued photo ID at your nearest Brex-designated branch and complete biometric verification to lift this hold.</p>
+                    </div>
+                  </div>
+                )}
                 {active.tenor === "selffund" && active.status === "pending" && !!state.accounts.find((a) => a.id === active.accountId)?.dafRequired && (
                   <div className="flex items-start gap-2.5 rounded-xl border border-amber-400/40 bg-amber-400/10 px-3.5 py-3">
                     <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
@@ -270,19 +297,21 @@ const Transactions = () => {
                     </div>
                   </div>
                 )}
-                <div>
-                  <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                    Timeline
-                  </p>
-                  <Timeline
-                    tx={active}
-                    dafPaused={
-                      active.tenor === "selffund" &&
-                      active.status === "pending" &&
-                      !!state.accounts.find((a) => a.id === active.accountId)?.dafRequired
-                    }
-                  />
-                </div>
+                {active.status !== "held" && (
+                  <div>
+                    <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                      Timeline
+                    </p>
+                    <Timeline
+                      tx={active}
+                      dafPaused={
+                        active.tenor === "selffund" &&
+                        active.status === "pending" &&
+                        !!state.accounts.find((a) => a.id === active.accountId)?.dafRequired
+                      }
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="mt-5 space-y-2">

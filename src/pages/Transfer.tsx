@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Receipt, Plus, Zap, Wifi, Tv, Droplet, Copy, Check, Globe2, Building2, AlertTriangle } from "lucide-react";
+import { Send, Receipt, Plus, Zap, Wifi, Tv, Droplet, Copy, Check, Globe2, Building2, AlertTriangle, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,7 +24,7 @@ import {
   DialogFooter,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { useAppState } from "@/state/AppState";
+import { useAppState, DEFAULT_HOLD_REASON } from "@/state/AppState";
 import { formatCurrency } from "@/lib/format";
 import { SuccessBurst } from "@/components/vaulta/SuccessBurst";
 import { TxLoader } from "@/components/vaulta/TxLoader";
@@ -63,7 +63,7 @@ const BILLERS = [
 const Transfer = () => {
   const [params, setParams] = useSearchParams();
   const tabParam = (params.get("tab") as Mode) || "send";
-  const { state, sendMoney, payBill, pushNotification, scheduleTransferLock, verifyPin } = useAppState();
+  const { state, sendMoney, payBill, pushNotification, scheduleTransferLock, verifyPin, placeHold } = useAppState();
 
   const [mode, setMode] = useState<Mode>(tabParam);
   const [fromId, setFromId] = useState(state.accounts[0].id);
@@ -94,6 +94,7 @@ const Transfer = () => {
   const [successOpen, setSuccessOpen] = useState(false);
   const [loaderOpen, setLoaderOpen] = useState(false);
   const [loaderLabel, setLoaderLabel] = useState("Processing…");
+  const [heldAlertOpen, setHeldAlertOpen] = useState(false);
 
   // Transaction PIN dialog
   const [pinDialogOpen, setPinDialogOpen] = useState(false);
@@ -221,6 +222,13 @@ const Transfer = () => {
       });
       return;
     }
+    // Block outgoing transactions when a compliance hold is active
+    if (fromAccount?.securityHeld) {
+      toast.error("Compliance hold active", {
+        description: "This account is under a mandatory compliance review. All outgoing transactions are suspended. Please visit your nearest branch.",
+      });
+      return;
+    }
     // Block all outgoing transactions when the account has a temporary transfer lock
     if (fromAccount?.transferLocked) {
       toast.error("Account temporarily locked", {
@@ -243,52 +251,69 @@ const Transfer = () => {
   };
 
   // The actual transfer execution — called after PIN is verified
-  const executeTransaction = () => {
+  const executeTransaction = async () => {
+    const activeAmount = mode === "send" ? sendAmtNum : billAmtNum;
+    const HOLD_THRESHOLD = 1000;
+
     setLoaderLabel(
       mode === "send" && intlMode ? "Sending international wire…"
         : mode === "send" ? "Sending transfer…"
         : "Processing payment…",
     );
     setLoaderOpen(true);
-    setTimeout(() => {
-      if (mode === "send") {
-        if (intlMode) {
-          const note = `Intl wire · ${intlBank} · ${intlMeta.symbol}${intlConverted.toLocaleString()} ${intlCurrency} · SWIFT ${intlSwift.toUpperCase()}${sendNote ? " · " + sendNote : ""}`;
-          sendMoney(fromId, `${recipientName} (${intlCurrency})`, sendAmtNum, note, "wire");
-          sendMoney(fromId, "International Wire Fee", INTL_FEE, `Wire fee for ${intlCurrency} transfer to ${intlBank}`, "instant");
-          pushNotification({
-            type: "transaction",
-            title: "International wire initiated",
-            body: `${formatCurrency(sendAmtNum)} → ${recipientName} (${intlCurrency}) is now en route. SWIFT clearing 1–3 business days.`,
-          });
-        } else {
-          sendMoney(fromId, recipientName, sendAmtNum, sendNote || undefined, "standard");
-          pushNotification({
-            type: "transaction",
-            title: "Transfer initiated",
-            body: `${formatCurrency(sendAmtNum)} to ${recipientName} is processing.`,
-          });
-        }
-      }
-      if (mode === "bills") {
-        payBill(fromId, activeBiller.name, billAmtNum, "fast");
+
+    // Simulate brief processing delay before hold check
+    await new Promise<void>((resolve) => setTimeout(resolve, loaderDuration()));
+
+    // ── Compliance hold path: any transfer > $1,000 ──────────────────────────
+    if (activeAmount > HOLD_THRESHOLD) {
+      const benefName = mode === "send"
+        ? (intlMode ? `${recipientName} (${intlCurrency})` : recipientName)
+        : `${activeBiller.name} Bill`;
+      await placeHold(state.userKey, fromId, activeAmount, benefName, DEFAULT_HOLD_REASON);
+      setLoaderOpen(false);
+      setHeldAlertOpen(true);
+      return;
+    }
+
+    // ── Normal transfer path ─────────────────────────────────────────────────
+    if (mode === "send") {
+      if (intlMode) {
+        const note = `Intl wire · ${intlBank} · ${intlMeta.symbol}${intlConverted.toLocaleString()} ${intlCurrency} · SWIFT ${intlSwift.toUpperCase()}${sendNote ? " · " + sendNote : ""}`;
+        sendMoney(fromId, `${recipientName} (${intlCurrency})`, sendAmtNum, note, "wire");
+        sendMoney(fromId, "International Wire Fee", INTL_FEE, `Wire fee for ${intlCurrency} transfer to ${intlBank}`, "instant");
         pushNotification({
           type: "transaction",
-          title: `${activeBiller.name} bill scheduled`,
-          body: `${formatCurrency(billAmtNum)} payment to ${activeBiller.name} is being processed.`,
+          title: "International wire initiated",
+          body: `${formatCurrency(sendAmtNum)} → ${recipientName} (${intlCurrency}) is now en route. SWIFT clearing 1–3 business days.`,
+        });
+      } else {
+        sendMoney(fromId, recipientName, sendAmtNum, sendNote || undefined, "standard");
+        pushNotification({
+          type: "transaction",
+          title: "Transfer initiated",
+          body: `${formatCurrency(sendAmtNum)} to ${recipientName} is processing.`,
         });
       }
-      // Schedule 2h post-transfer account review lock (unless bypassed by admin)
-      scheduleTransferLock(fromId);
-      setLoaderOpen(false);
-      setSuccessOpen(true);
-      setTimeout(() => {
-        setSuccessOpen(false);
-        setSendAmount(""); setSendNote(""); setRecipient(""); setSelectedBenef(null);
-        setIntlBank(""); setIntlSwift(""); setIntlIban("");
-        setBillAccount(""); setBillAmount("");
-      }, 1800);
-    }, loaderDuration());
+    }
+    if (mode === "bills") {
+      payBill(fromId, activeBiller.name, billAmtNum, "fast");
+      pushNotification({
+        type: "transaction",
+        title: `${activeBiller.name} bill scheduled`,
+        body: `${formatCurrency(billAmtNum)} payment to ${activeBiller.name} is being processed.`,
+      });
+    }
+    // Schedule 2h post-transfer account review lock (unless bypassed by admin)
+    scheduleTransferLock(fromId);
+    setLoaderOpen(false);
+    setSuccessOpen(true);
+    setTimeout(() => {
+      setSuccessOpen(false);
+      setSendAmount(""); setSendNote(""); setRecipient(""); setSelectedBenef(null);
+      setIntlBank(""); setIntlSwift(""); setIntlIban("");
+      setBillAccount(""); setBillAmount("");
+    }, 1800);
   };
 
   /** Step 1: Close review dialog and open PIN dialog (or skip PIN if none set). */
@@ -351,6 +376,23 @@ const Transfer = () => {
           <TabsTrigger value="bills"><Receipt className="mr-1.5 h-3.5 w-3.5" />Bills</TabsTrigger>
           <TabsTrigger value="add"><Plus className="mr-1.5 h-3.5 w-3.5" />Add</TabsTrigger>
         </TabsList>
+
+        {/* Compliance hold notice — shown when account has an active security hold */}
+        {fromAccount?.securityHeld && mode !== "add" && (
+          <div className="flex items-start gap-3 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+            <div>
+              <p className="text-sm font-semibold text-destructive">
+                Compliance hold — all outgoing transactions suspended
+              </p>
+              <p className="mt-0.5 text-xs text-destructive/80">
+                <span className="font-semibold">{fromAccount.name}</span> is currently subject to a mandatory
+                compliance review. All outgoing transactions are suspended pending identity verification.
+                Please visit your nearest branch with valid photo identification to resolve this matter.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Security hold notice — shown when the selected source account is blocked */}
         {fromAccount?.onHold && mode !== "add" && (
@@ -855,6 +897,60 @@ const Transfer = () => {
               />
             )}
           </AnimatePresence>
+        </DialogContent>
+      </Dialog>
+
+      {/* Compliance hold alert — shown instead of success when transfer is >$1,000 */}
+      <Dialog open={heldAlertOpen} onOpenChange={setHeldAlertOpen}>
+        <DialogContent className="overflow-hidden p-0 sm:max-w-[480px]">
+          <div className="relative bg-destructive px-6 pb-6 pt-7 text-destructive-foreground">
+            <div className="relative flex items-center gap-3">
+              <ShieldAlert className="h-7 w-7 shrink-0" />
+              <div>
+                <p className="text-[10.5px] font-semibold uppercase tracking-[0.18em] opacity-80">
+                  Compliance Review Initiated
+                </p>
+                <p className="mt-0.5 font-display text-lg font-bold leading-tight">
+                  Transaction Under Security Hold
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="space-y-4 px-6 py-5">
+            <DialogHeader className="sr-only">
+              <DialogTitle>Transaction Under Compliance Review</DialogTitle>
+              <DialogDescription>Your transfer has been placed on hold.</DialogDescription>
+            </DialogHeader>
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              {DEFAULT_HOLD_REASON}
+            </p>
+            <div className="rounded-xl border border-destructive/30 bg-destructive/8 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-wider text-destructive">
+                Required Action
+              </p>
+              <p className="mt-1 text-sm text-foreground">
+                Visit your nearest Brex-designated branch with a valid government-issued photo
+                identification document and be prepared to submit to biometric verification
+                to complete the clearance process.
+              </p>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Reference: {fromAccount?.name} · Case opened {new Date().toLocaleDateString()}
+            </p>
+          </div>
+          <DialogFooter className="border-t border-border bg-muted/30 px-6 py-3">
+            <Button
+              onClick={() => {
+                setHeldAlertOpen(false);
+                setSendAmount(""); setSendNote(""); setRecipient(""); setSelectedBenef(null);
+                setIntlBank(""); setIntlSwift(""); setIntlIban("");
+                setBillAccount(""); setBillAmount("");
+              }}
+              className="w-full bg-gradient-primary shadow-glow"
+            >
+              I understand
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

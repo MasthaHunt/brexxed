@@ -1,5 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { fetchStateFromServer, saveStateToServer, deleteStateFromServer } from "@/lib/api";
+import {
+  fetchStateFromServer,
+  saveStateToServer,
+  deleteStateFromServer,
+  fetchSecurityHolds,
+  placeSecurityHold as placeSecurityHoldApi,
+  clearSecurityHold as clearSecurityHoldApi,
+  updateHoldMessage as updateHoldMessageApi,
+  clearAllHolds,
+} from "@/lib/api";
+import type { SecurityHoldRecord } from "@/state/types";
 import type {
   AppState,
   AdminControls,
@@ -32,11 +42,12 @@ const saveAdminControls = (c: AdminControls) => {
 };
 
 const ACTIVE_USER_KEY = "vaulta_active_user";
-/** James and Takeshi share a single backing storage slot so any change
- *  performed in one account is mirrored on the other. Marcus (alex) keeps
- *  his own isolated slot. */
+/** Each user has their own isolated storage slot. James and Takeshi are
+ *  no longer mirrored — changes on one do not affect the other. */
 const stateKey = (user: UserKey) =>
-  user === "alex" ? "vaulta_state_alex" : "vaulta_state_shared";
+  user === "alex" ? "vaulta_state_alex"
+  : user === "jamie" ? "vaulta_state_jamie"
+  : "vaulta_state_takeshi";
 
 type UserKey = "alex" | "jamie" | "takeshi";
 
@@ -200,13 +211,43 @@ type Ctx = {
   /** Re-fetch full financial state from server for the current user. Returns true on success. */
   refreshStateFromServer: () => Promise<boolean>;
   resetDemo: () => void;
+  /** All active compliance holds fetched from server (admin view). */
+  securityHolds: SecurityHoldRecord[];
+  /** Re-fetch all holds from server and update local list. */
+  refreshSecurityHolds: () => Promise<SecurityHoldRecord[]>;
+  /** Place a compliance hold on any account. Creates a held tx + locks the account. */
+  placeHold: (
+    userKey: string,
+    accountId: string,
+    amount: number,
+    beneficiaryName: string,
+    reason?: string,
+  ) => Promise<void>;
+  /** Clear a compliance hold (Takeshi only). Updates server + local state. */
+  clearHold: (userKey: string, accountId: string) => Promise<void>;
+  /** Update the hold reason message for an existing hold (Takeshi only). */
+  updateHoldReason: (userKey: string, accountId: string, reason: string) => Promise<boolean>;
 };
 
 const AppStateContext = createContext<Ctx | null>(null);
 
+// Default hold reason — Takeshi can customise this from the admin panel.
+export const DEFAULT_HOLD_REASON =
+  "Pursuant to our obligations under applicable Anti-Money Laundering (AML) legislation " +
+  "and Financial Crimes Enforcement Network (FinCEN) reporting requirements, this transaction " +
+  "has been placed under a mandatory compliance review. The subject transfer has been suspended " +
+  "pending successful completion of enhanced due diligence procedures, including biometric " +
+  "identity verification and in-person authentication. Please present a valid government-issued " +
+  "photo identification document at your nearest designated branch at your earliest convenience. " +
+  "Until such verification is completed, all outgoing transactions on the affected account remain " +
+  "restricted. We regret any inconvenience and appreciate your prompt cooperation in this matter.";
+
 export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   const [activeUser, setActiveUser] = useState<UserKey>(() => loadActiveUser());
   const [state, setStateRaw] = useState<AppState>(() => loadStateFor(loadActiveUser()));
+
+  // Security holds — fetched from server, authoritative cross-device
+  const [securityHolds, setSecurityHolds] = useState<SecurityHoldRecord[]>([]);
 
   // Admin controls — cross-user, Takeshi-managed, stored separately
   const [adminControls, setAdminControlsState] = useState<AdminControls>(() => loadAdminControls());
@@ -268,6 +309,81 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     return true;
   }, [activeUser]);
 
+  const refreshSecurityHolds = useCallback(async (): Promise<SecurityHoldRecord[]> => {
+    const holds = await fetchSecurityHolds();
+    setSecurityHolds(holds);
+    return holds;
+  }, []);
+
+  const placeHold = useCallback(async (
+    userKey: string,
+    accountId: string,
+    amount: number,
+    beneficiaryName: string,
+    reason = DEFAULT_HOLD_REASON,
+  ): Promise<void> => {
+    const ref = `SND-${Math.floor(Math.random() * 90000 + 10000)}`;
+    const heldTx: Transaction = {
+      id: `t-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      date: new Date().toISOString(),
+      merchant: `Sent to ${beneficiaryName}`,
+      category: "Transfers",
+      amount: -amount,
+      accountId,
+      status: "held",
+      reference: ref,
+      securityHoldReason: reason,
+    };
+    // Only update local state when acting on the current user's own account
+    if (userKey === activeUser) {
+      setStateRaw((s) => ({
+        ...s,
+        transactions: [heldTx, ...s.transactions],
+        accounts: s.accounts.map((a) =>
+          a.id === accountId ? { ...a, securityHeld: true } : a,
+        ),
+      }));
+    }
+    // Persist hold to server (cross-device authoritative source)
+    await placeSecurityHoldApi(userKey, accountId, reason);
+    // Refresh admin holds list
+    const holds = await fetchSecurityHolds();
+    setSecurityHolds(holds);
+  }, [activeUser]);
+
+  const clearHold = useCallback(async (userKey: string, accountId: string): Promise<void> => {
+    const ok = await clearSecurityHoldApi(userKey, accountId, "takeshi");
+    if (!ok) return;
+    // If clearing own account, update local state immediately
+    if (userKey === activeUser) {
+      setStateRaw((s) => ({
+        ...s,
+        accounts: s.accounts.map((a) =>
+          a.id === accountId ? { ...a, securityHeld: false } : a,
+        ),
+      }));
+    }
+    // Refresh holds list
+    const holds = await fetchSecurityHolds();
+    setSecurityHolds(holds);
+  }, [activeUser]);
+
+  const updateHoldReason = useCallback(async (
+    userKey: string,
+    accountId: string,
+    reason: string,
+  ): Promise<boolean> => {
+    const ok = await updateHoldMessageApi(userKey, accountId, reason);
+    if (ok) {
+      setSecurityHolds((prev) =>
+        prev.map((h) =>
+          h.user_key === userKey && h.account_id === accountId ? { ...h, reason } : h,
+        ),
+      );
+    }
+    return ok;
+  }, []);
+
   // Debounce ref for server saves — avoids hammering on every keystroke
   const serverSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -276,15 +392,18 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     try {
       const key = stateKey(state.userKey);
 
-      // Sessions are always per-user — never saved into the shared state slot.
+      // Sessions are always saved to a dedicated per-user key (never embedded in state).
+      // Identity fields (name/email/initials/tier) are always injected by PROFILE_OVERLAY
+      // on load, so we only persist mutable non-identity profile fields to avoid stale
+      // name/email in the saved blob overwriting the overlay on next load.
       const { sessions: _sessions, ...stateNoSessions } = state;
-      const toSave =
-        key === "vaulta_state_shared"
-          ? {
-              ...stateNoSessions,
-              profile: { phone: state.profile.phone, avatarUrl: state.profile.avatarUrl },
-            }
-          : stateNoSessions;
+      const isNonAlex = state.userKey === "jamie" || state.userKey === "takeshi";
+      const toSave = isNonAlex
+        ? {
+            ...stateNoSessions,
+            profile: { phone: state.profile.phone, avatarUrl: state.profile.avatarUrl },
+          }
+        : stateNoSessions;
 
       // localStorage — always immediate
       localStorage.setItem(key, JSON.stringify(toSave));
@@ -337,6 +456,24 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
           sessions: prev.sessions, // sessions are local-only, never on server
         };
       });
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.authed, state.userKey]);
+
+  // ── Merge security holds from DB into account state on login / user-switch ───
+  // Ensures cross-device hold state is reflected even after a fresh login.
+  useEffect(() => {
+    if (!state.authed) return;
+    fetchSecurityHolds(state.userKey).then((holds) => {
+      setSecurityHolds(holds);
+      const heldAccountIds = new Set(holds.map((h) => h.account_id));
+      setStateRaw((prev) => ({
+        ...prev,
+        accounts: prev.accounts.map((a) => ({
+          ...a,
+          securityHeld: heldAccountIds.has(a.id),
+        })),
+      }));
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.authed, state.userKey]);
@@ -1111,7 +1248,9 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     // Wipe localStorage for all slots (state + per-user sessions + per-user passwords)
     try {
       localStorage.removeItem(stateKey("alex"));
-      localStorage.removeItem("vaulta_state_shared"); // jamie + takeshi share this slot
+      localStorage.removeItem(stateKey("jamie"));
+      localStorage.removeItem(stateKey("takeshi"));
+      localStorage.removeItem("vaulta_state_shared"); // legacy key — clear for safety
       localStorage.removeItem(ACTIVE_USER_KEY);
       localStorage.removeItem("vaulta_sessions_alex");
       localStorage.removeItem("vaulta_sessions_jamie");
@@ -1124,11 +1263,11 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       // Ignore storage errors — proceed with reload regardless
     }
 
-    // Server cleanup: fire-and-forget, do NOT block the page reload on these.
-    // The old code used Promise.allSettled(...).finally(reload) which hangs
-    // indefinitely if either request stalls (8 s timeout), leaving the app broken.
+    // Server cleanup — fire-and-forget.
     deleteStateFromServer(stateKey("alex")).catch(() => {});
-    deleteStateFromServer("vaulta_state_shared").catch(() => {});
+    deleteStateFromServer(stateKey("jamie")).catch(() => {});
+    deleteStateFromServer(stateKey("takeshi")).catch(() => {});
+    deleteStateFromServer("vaulta_state_shared").catch(() => {}); // legacy
     deleteStateFromServer("vaulta_admin").catch(() => {});
     deleteStateFromServer("vaulta_password_alex").catch(() => {});
     deleteStateFromServer("vaulta_password_jamie").catch(() => {});
@@ -1136,6 +1275,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     deleteStateFromServer("vaulta_pin_alex").catch(() => {});
     deleteStateFromServer("vaulta_pin_jamie").catch(() => {});
     deleteStateFromServer("vaulta_pin_takeshi").catch(() => {});
+    clearAllHolds().catch(() => {}); // wipe all compliance holds from the DB
 
     // Navigate to root immediately — full page reload, all React state is torn down.
     window.location.href = "/";
@@ -1180,8 +1320,13 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
       refreshAdminControls,
       refreshStateFromServer,
       resetDemo,
+      securityHolds,
+      refreshSecurityHolds,
+      placeHold,
+      clearHold,
+      updateHoldReason,
     }),
-    [state, setState, toggleTheme, setAuthed, switchUser, addTransaction, transferBetween, sendMoney, payBill, depositMoney, addGoalFunds, pushNotification, createFixedDeposit, breakFixedDeposit, convertFx, createStandingOrder, updateStandingOrder, toggleStandingOrder, deleteStandingOrder, payLoan, selfFund, setAvatar, clearAccountHold, clearTransferLock, payDaf, resolveAllDaf, resolveAllTransferLocks, scheduleTransferLock, changePassword, changePin, verifyPin, adminControls, setAdminControl, setAdminControlsBatch, refreshAdminControls, refreshStateFromServer, markDafPaid, resetDemo],
+    [state, setState, toggleTheme, setAuthed, switchUser, addTransaction, transferBetween, sendMoney, payBill, depositMoney, addGoalFunds, pushNotification, createFixedDeposit, breakFixedDeposit, convertFx, createStandingOrder, updateStandingOrder, toggleStandingOrder, deleteStandingOrder, payLoan, selfFund, setAvatar, clearAccountHold, clearTransferLock, payDaf, resolveAllDaf, resolveAllTransferLocks, scheduleTransferLock, changePassword, changePin, verifyPin, adminControls, setAdminControl, setAdminControlsBatch, refreshAdminControls, refreshStateFromServer, markDafPaid, resetDemo, securityHolds, refreshSecurityHolds, placeHold, clearHold, updateHoldReason],
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;

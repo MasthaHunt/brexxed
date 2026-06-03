@@ -24,6 +24,12 @@ import mysql from "mysql2/promise";
 import path from "path";
 import { fileURLToPath } from "url";
 
+// Map user keys to their server storage keys
+const userStateKey = (userKey) =>
+  userKey === "alex"    ? "vaulta_state_alex"
+  : userKey === "jamie" ? "vaulta_state_jamie"
+  :                       "vaulta_state_takeshi";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -97,8 +103,8 @@ async function getPool() {
         connectionLimit: 10,
       });
 
-  // Create the table on first connection — no manual migration step needed.
-  // Assign to `pool` only AFTER the table is confirmed — if this throws,
+  // Create tables on first connection — no manual migration step needed.
+  // Assign to `pool` only AFTER the tables are confirmed — if this throws,
   // `pool` stays null so the next request retries instead of reusing a
   // broken pool (the "self-poisoning" bug).
   await candidate.execute(`
@@ -107,6 +113,16 @@ async function getPool() {
       state_json LONGTEXT     NOT NULL,
       updated_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
                               ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  await candidate.execute(`
+    CREATE TABLE IF NOT EXISTS account_holds (
+      id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_key   VARCHAR(40)  NOT NULL,
+      account_id VARCHAR(40)  NOT NULL,
+      reason     TEXT         NOT NULL,
+      set_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_user_account (user_key, account_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
@@ -118,6 +134,62 @@ async function getPool() {
 
 /** Only allow the known storage key names (letters + underscores, max 40 chars). */
 const validKey = (k) => typeof k === "string" && /^[a-z_]{1,40}$/.test(k);
+
+/**
+ * Push a notification into a user's state_json on the server.
+ * Used when cross-user events (e.g. admin clearing a hold) need to notify
+ * someone who isn't currently connected to this session.
+ */
+async function pushNotificationToUser(db, userKey, notification) {
+  const stateKey = userStateKey(userKey);
+  try {
+    const [rows] = await db.execute(
+      "SELECT state_json FROM user_states WHERE user_key = ? LIMIT 1",
+      [stateKey],
+    );
+    if (!rows.length) return; // user has no state yet — they'll get the notif on first sync after login
+    const state = JSON.parse(rows[0].state_json);
+    const notifications = Array.isArray(state.notifications) ? state.notifications : [];
+    notifications.unshift(notification);
+    state.notifications = notifications.slice(0, 200);
+    await db.execute(
+      `INSERT INTO user_states (user_key, state_json)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = NOW()`,
+      [stateKey, JSON.stringify(state)],
+    );
+  } catch (e) {
+    console.error("pushNotificationToUser:", e.message);
+  }
+}
+
+/**
+ * Update a single account's `securityHeld` flag inside a user's state_json.
+ * Called by hold placement and hold clearance so cross-device state is consistent.
+ */
+async function setAccountSecurityHeld(db, userKey, accountId, held) {
+  const stateKey = userStateKey(userKey);
+  try {
+    const [rows] = await db.execute(
+      "SELECT state_json FROM user_states WHERE user_key = ? LIMIT 1",
+      [stateKey],
+    );
+    if (!rows.length) return;
+    const state = JSON.parse(rows[0].state_json);
+    if (!Array.isArray(state.accounts)) return;
+    state.accounts = state.accounts.map((a) =>
+      a.id === accountId ? { ...a, securityHeld: held } : a,
+    );
+    await db.execute(
+      `INSERT INTO user_states (user_key, state_json)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = NOW()`,
+      [stateKey, JSON.stringify(state)],
+    );
+  } catch (e) {
+    console.error("setAccountSecurityHeld:", e.message);
+  }
+}
 
 /** Check X-API-Secret header before every /api/* request. */
 function auth(req, res, next) {
@@ -193,6 +265,149 @@ app.delete("/api/state", auth, async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error("DELETE /api/state:", err.message);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// ── GET /api/holds?userKey=<key> ─────────────────────────────────────────────
+// Returns all holds, or filtered by userKey when provided.
+app.get("/api/holds", auth, async (req, res) => {
+  const filter = req.query.userKey ?? null;
+  try {
+    const db = await getPool();
+    if (!db) return res.json({ holds: [] });
+
+    const [rows] = filter
+      ? await db.execute(
+          "SELECT id, user_key, account_id, reason, set_at FROM account_holds WHERE user_key = ? ORDER BY set_at DESC",
+          [filter],
+        )
+      : await db.execute(
+          "SELECT id, user_key, account_id, reason, set_at FROM account_holds ORDER BY set_at DESC",
+        );
+    res.json({ holds: rows });
+  } catch (err) {
+    console.error("GET /api/holds:", err.message);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// ── POST /api/hold ────────────────────────────────────────────────────────────
+// Body: { userKey, accountId, reason }
+// Places a compliance hold on an account, updates user state, and notifies the user.
+app.post("/api/hold", auth, async (req, res) => {
+  const { userKey, accountId, reason } = req.body ?? {};
+  if (!validKey(userKey) || !validKey(accountId) || typeof reason !== "string" || !reason.trim()) {
+    return res.status(400).json({ error: "Invalid request body" });
+  }
+
+  try {
+    const db = await getPool();
+    if (!db) return res.json({ ok: true });
+
+    await db.execute(
+      `INSERT INTO account_holds (user_key, account_id, reason)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE reason = VALUES(reason), set_at = NOW()`,
+      [userKey, accountId, reason.trim()],
+    );
+
+    // Mark the account as held in the user's persisted state
+    await setAccountSecurityHeld(db, userKey, accountId, true);
+
+    // Notify the user (server-side push so other devices see it on next sync)
+    await pushNotificationToUser(db, userKey, {
+      id: `n-${Date.now()}-hold`,
+      title: "Transaction Under Compliance Review — Urgent Action Required",
+      body: reason.trim(),
+      type: "security",
+      date: new Date().toISOString(),
+      read: false,
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("POST /api/hold:", err.message);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// ── PATCH /api/hold — update hold reason ─────────────────────────────────────
+// Body: { userKey, accountId, reason }
+app.patch("/api/hold", auth, async (req, res) => {
+  const { userKey, accountId, reason } = req.body ?? {};
+  if (!validKey(userKey) || !validKey(accountId) || typeof reason !== "string" || !reason.trim()) {
+    return res.status(400).json({ error: "Invalid request body" });
+  }
+  try {
+    const db = await getPool();
+    if (!db) return res.json({ ok: true });
+
+    await db.execute(
+      "UPDATE account_holds SET reason = ? WHERE user_key = ? AND account_id = ?",
+      [reason.trim(), userKey, accountId],
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /api/hold:", err.message);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// ── DELETE /api/hold — clear one hold (Takeshi only) ─────────────────────────
+// Body: { userKey, accountId, clearedBy }
+app.delete("/api/hold", auth, async (req, res) => {
+  const { userKey, accountId, clearedBy } = req.body ?? {};
+  if (!validKey(userKey) || !validKey(accountId)) {
+    return res.status(400).json({ error: "Invalid request body" });
+  }
+  if (clearedBy !== "takeshi") {
+    return res.status(403).json({ error: "Permission denied — only Takeshi can clear holds" });
+  }
+  try {
+    const db = await getPool();
+    if (!db) return res.json({ ok: true });
+
+    await db.execute(
+      "DELETE FROM account_holds WHERE user_key = ? AND account_id = ?",
+      [userKey, accountId],
+    );
+
+    // Lift the hold flag in the user's persisted state
+    await setAccountSecurityHeld(db, userKey, accountId, false);
+
+    // Notify the affected user that the hold has been lifted
+    await pushNotificationToUser(db, userKey, {
+      id: `n-${Date.now()}-hold-cleared`,
+      title: "Account Compliance Hold Resolved",
+      body:
+        "Following the satisfactory completion of our enhanced due diligence procedures, " +
+        "the compliance hold on your account has been formally lifted by our Compliance " +
+        "and Risk Management team. You may resume normal banking activities with immediate " +
+        "effect. We sincerely apologize for any inconvenience caused and thank you for " +
+        "your cooperation throughout this process.",
+      type: "security",
+      date: new Date().toISOString(),
+      read: false,
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /api/hold:", err.message);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// ── DELETE /api/holds — clear ALL holds (admin reset) ────────────────────────
+app.delete("/api/holds", auth, async (req, res) => {
+  try {
+    const db = await getPool();
+    if (!db) return res.json({ ok: true });
+
+    await db.execute("DELETE FROM account_holds");
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /api/holds:", err.message);
     res.status(500).json({ error: "Database error" });
   }
 });

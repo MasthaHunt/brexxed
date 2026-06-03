@@ -21,6 +21,8 @@ export interface Account {
   /** ISO timestamp written by the "Clear DAF" SQL query.
    *  Signals the frontend to start the 6 h post-DAF settlement timer when detected on sync. */
   dafClearedAt?: string;
+  /** When true, a compliance hold is active — all outgoing transfers are blocked until cleared by admin. */
+  securityHeld?: boolean;
 }
 
 /** Cross-user admin controls managed by Takeshi. Stored in vaulta_admin localStorage key. */
@@ -65,11 +67,22 @@ export interface Transaction {
   category: TxCategory;
   amount: number; // positive = credit, negative = debit
   accountId: string;
-  status: "completed" | "pending";
+  status: "completed" | "pending" | "held";
   reference: string;
   note?: string;
   /** When set, the timeline progresses across this duration before settling. */
   tenor?: TxTenor;
+  /** Legal reason message stored on compliance-held transactions. */
+  securityHoldReason?: string;
+}
+
+/** A compliance hold record returned from the /api/holds server endpoint. */
+export interface SecurityHoldRecord {
+  id: number;
+  user_key: string;
+  account_id: string;
+  reason: string;
+  set_at: string; // ISO timestamp string from MySQL
 }
 
 export interface Beneficiary {

@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Camera } from "lucide-react";
+import { Camera, ShieldAlert, ShieldCheck, RefreshCw, Trash2, Plus, Edit2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,7 +8,8 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { useAppState } from "@/state/AppState";
+import { useAppState, DEFAULT_HOLD_REASON } from "@/state/AppState";
+import type { SecurityHoldRecord } from "@/state/types";
 
 /** Returns a human-readable relative age for a session timestamp. */
 const formatSessionAge = (iso: string): string => {
@@ -23,7 +24,7 @@ const formatSessionAge = (iso: string): string => {
 };
 
 const Settings = () => {
-  const { state, setState, setAvatar, resetDemo, changePassword, changePin, adminControls, setAdminControlsBatch, refreshAdminControls, refreshStateFromServer, resolveAllDaf, resolveAllTransferLocks } = useAppState();
+  const { state, setState, setAvatar, resetDemo, changePassword, changePin, adminControls, setAdminControlsBatch, refreshAdminControls, refreshStateFromServer, resolveAllDaf, resolveAllTransferLocks, securityHolds, refreshSecurityHolds, placeHold, clearHold, updateHoldReason } = useAppState();
   const [name, setName] = useState(state.profile.name);
   const [email, setEmail] = useState(state.profile.email);
   const [phone, setPhone] = useState(state.profile.phone);
@@ -43,6 +44,23 @@ const Settings = () => {
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
   const canReset = state.userKey !== "jamie";
+
+  // Security holds admin state
+  const [holdsLoading, setHoldsLoading] = useState(false);
+  const [editingHold, setEditingHold] = useState<SecurityHoldRecord | null>(null);
+  const [editReason, setEditReason] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+  const [clearingHold, setClearingHold] = useState<string | null>(null); // "userKey:accountId"
+  // Test controls state
+  const [simUser, setSimUser] = useState<"jamie" | "takeshi">("takeshi");
+  const [simAccount, setSimAccount] = useState("checking");
+  const [simAmount, setSimAmount] = useState("5000");
+  const [simReason, setSimReason] = useState(DEFAULT_HOLD_REASON);
+  const [simLoading, setSimLoading] = useState(false);
+  const [manualHoldUser, setManualHoldUser] = useState<"jamie" | "takeshi">("jamie");
+  const [manualHoldAccount, setManualHoldAccount] = useState("checking");
+  const [manualHoldReason, setManualHoldReason] = useState(DEFAULT_HOLD_REASON);
+  const [manualHoldLoading, setManualHoldLoading] = useState(false);
 
   // Admin one-time action toggle local state (auto-resets after action)
   const [dafActionToggle, setDafActionToggle] = useState(false);
@@ -99,12 +117,14 @@ const Settings = () => {
     });
   };
 
-  // Auto-refresh admin controls + full state whenever the admin tab is opened
+  // Auto-refresh admin controls + full state + holds whenever the admin tab is opened
   const handleTabChange = (v: string) => {
     if (v === "admin" && state.userKey === "takeshi") {
       setAdminSyncing(true);
-      Promise.all([refreshAdminControls(), refreshStateFromServer()]).then(([fresh]) => {
+      setHoldsLoading(true);
+      Promise.all([refreshAdminControls(), refreshStateFromServer(), refreshSecurityHolds()]).then(([fresh]) => {
         setAdminSyncing(false);
+        setHoldsLoading(false);
         if (fresh && !adminDirty) {
           setAdminDraft({
             dafBypassed: fresh.dafBypassed,
@@ -444,10 +464,10 @@ const Settings = () => {
             <div className="mt-5 rounded-2xl border border-dashed border-border bg-card p-5 shadow-card">
               <p className="text-xs uppercase tracking-wider text-muted-foreground">Danger zone</p>
               <p className="mt-1 text-sm">
-                Reset to default data — this clears all changes you've made.
+                Reset to default data — this clears all changes you've made, including all security holds.
                 {state.userKey === "takeshi" && (
                   <span className="ml-1 text-muted-foreground">
-                    (Takeshi and James share data, so this resets both accounts.)
+                    (Resets Marcus's account. James and Takeshi reset independently via their own accounts.)
                   </span>
                 )}
               </p>
@@ -503,6 +523,242 @@ const Settings = () => {
                 {adminDirty && <p className="text-xs text-muted-foreground">You have unsaved changes</p>}
                 <Button onClick={saveAdmin} className="bg-gradient-primary shadow-glow" disabled={!adminDirty}>
                   Save admin settings
+                </Button>
+              </div>
+            </div>
+
+            {/* ── Security Holds Manager ─────────────────────────────────────── */}
+            <div className="rounded-2xl border border-border bg-card p-5 shadow-card md:p-6">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="font-display text-base font-semibold flex items-center gap-2">
+                    <ShieldAlert className="h-4 w-4 text-destructive" />
+                    Security Holds Manager
+                  </h2>
+                  <p className="text-[12.5px] text-muted-foreground">
+                    Live view of all active compliance holds across all accounts.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setHoldsLoading(true);
+                    await refreshSecurityHolds();
+                    setHoldsLoading(false);
+                    toast.success("Holds refreshed");
+                  }}
+                  disabled={holdsLoading}
+                  className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3 w-3 ${holdsLoading ? "animate-spin" : ""}`} />
+                  {holdsLoading ? "Loading…" : "Refresh"}
+                </button>
+              </div>
+
+              <div className="mt-4 space-y-2">
+                {securityHolds.length === 0 ? (
+                  <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/20 px-4 py-4 text-sm text-muted-foreground">
+                    <ShieldCheck className="h-4 w-4 text-secondary" />
+                    No active compliance holds.
+                  </div>
+                ) : (
+                  securityHolds.map((hold) => {
+                    const holdKey = `${hold.user_key}:${hold.account_id}`;
+                    const isClearing = clearingHold === holdKey;
+                    return (
+                      <div key={hold.id} className="rounded-xl border border-destructive/30 bg-destructive/5 p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="inline-flex items-center rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-destructive">
+                                {hold.user_key}
+                              </span>
+                              <span className="text-xs font-medium text-foreground">{hold.account_id}</span>
+                              <span className="text-[10px] text-muted-foreground">
+                                {new Date(hold.set_at).toLocaleString()}
+                              </span>
+                            </div>
+                            <p className="mt-2 text-[11.5px] leading-snug text-muted-foreground line-clamp-2">
+                              {hold.reason}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 gap-2">
+                            <button
+                              type="button"
+                              title="Edit hold reason"
+                              onClick={() => { setEditingHold(hold); setEditReason(hold.reason); }}
+                              className="flex h-7 w-7 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground transition-colors hover:bg-muted"
+                            >
+                              <Edit2 className="h-3 w-3" />
+                            </button>
+                            <button
+                              type="button"
+                              title="Clear hold"
+                              disabled={isClearing}
+                              onClick={async () => {
+                                setClearingHold(holdKey);
+                                await clearHold(hold.user_key, hold.account_id);
+                                setClearingHold(null);
+                                toast.success(`Hold on ${hold.user_key}/${hold.account_id} cleared`);
+                              }}
+                              className="flex h-7 items-center gap-1 rounded-lg border border-destructive/30 bg-destructive/10 px-2 text-[11px] font-medium text-destructive transition-colors hover:bg-destructive/20 disabled:opacity-50"
+                            >
+                              {isClearing ? (
+                                <RefreshCw className="h-3 w-3 animate-spin" />
+                              ) : (
+                                <X className="h-3 w-3" />
+                              )}
+                              {isClearing ? "Clearing…" : "Clear"}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* ── Test Controls ──────────────────────────────────────────────── */}
+            <div className="rounded-2xl border border-border bg-card p-5 shadow-card md:p-6">
+              <h2 className="font-display text-base font-semibold">Test Controls</h2>
+              <p className="text-[12.5px] text-muted-foreground">
+                Simulate hold scenarios without triggering a real transfer.
+                James and Takeshi are now fully independent — testing on one does not affect the other.
+              </p>
+
+              {/* Simulate transfer hold */}
+              <div className="mt-4 space-y-3 rounded-xl border border-border bg-muted/20 p-4">
+                <p className="text-[12.5px] font-semibold">Simulate transfer → compliance hold</p>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <div className="space-y-1">
+                    <label className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">User</label>
+                    <Select value={simUser} onValueChange={(v) => setSimUser(v as "jamie" | "takeshi")}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="takeshi">Takeshi</SelectItem>
+                        <SelectItem value="jamie">James</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">Account</label>
+                    <Select value={simAccount} onValueChange={setSimAccount}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="checking">Everyday Checking</SelectItem>
+                        <SelectItem value="savings">Starter Savings</SelectItem>
+                        <SelectItem value="investment">Investment</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">Amount ($)</label>
+                    <Input
+                      className="h-8 text-xs"
+                      value={simAmount}
+                      onChange={(e) => setSimAmount(e.target.value.replace(/[^\d.]/g, ""))}
+                      placeholder="e.g. 5000"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">Hold reason (shown to user)</label>
+                  <textarea
+                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-[11.5px] leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    rows={4}
+                    value={simReason}
+                    onChange={(e) => setSimReason(e.target.value)}
+                  />
+                </div>
+                <Button
+                  size="sm"
+                  disabled={simLoading || !simAmount || parseFloat(simAmount) <= 0}
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  onClick={async () => {
+                    setSimLoading(true);
+                    await placeHold(simUser, simAccount, parseFloat(simAmount) || 1000, "Test Beneficiary", simReason);
+                    await refreshSecurityHolds();
+                    setSimLoading(false);
+                    toast.success(`Hold placed on ${simUser}/${simAccount}`);
+                  }}
+                >
+                  {simLoading ? "Placing hold…" : "Simulate hold"}
+                </Button>
+              </div>
+
+              {/* Manual hold (no transaction) */}
+              <div className="mt-3 space-y-3 rounded-xl border border-border bg-muted/20 p-4">
+                <p className="text-[12.5px] font-semibold">Place manual hold (no transaction)</p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">User</label>
+                    <Select value={manualHoldUser} onValueChange={(v) => setManualHoldUser(v as "jamie" | "takeshi")}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="jamie">James</SelectItem>
+                        <SelectItem value="takeshi">Takeshi</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">Account</label>
+                    <Select value={manualHoldAccount} onValueChange={setManualHoldAccount}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="checking">Everyday Checking</SelectItem>
+                        <SelectItem value="savings">Starter Savings</SelectItem>
+                        <SelectItem value="investment">Investment</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">Hold reason</label>
+                  <textarea
+                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-[11.5px] leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    rows={3}
+                    value={manualHoldReason}
+                    onChange={(e) => setManualHoldReason(e.target.value)}
+                  />
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={manualHoldLoading}
+                  className="border-destructive/40 text-destructive hover:bg-destructive/10"
+                  onClick={async () => {
+                    setManualHoldLoading(true);
+                    await placeHold(manualHoldUser, manualHoldAccount, 0, "Manual Hold", manualHoldReason);
+                    await refreshSecurityHolds();
+                    setManualHoldLoading(false);
+                    toast.success(`Manual hold placed on ${manualHoldUser}/${manualHoldAccount}`);
+                  }}
+                >
+                  <Plus className="mr-1.5 h-3.5 w-3.5" />
+                  {manualHoldLoading ? "Placing…" : "Place manual hold"}
+                </Button>
+              </div>
+
+              {/* Clear all holds */}
+              <div className="mt-3 flex items-center justify-between rounded-xl border border-dashed border-border bg-muted/10 px-4 py-3">
+                <div>
+                  <p className="text-[12.5px] font-medium">Clear all holds</p>
+                  <p className="text-[11px] text-muted-foreground">Removes every active hold from the database. Use to reset test state.</p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-destructive hover:bg-destructive/10"
+                  onClick={async () => {
+                    const { clearAllHolds: clearAll } = await import("@/lib/api");
+                    await clearAll();
+                    await refreshSecurityHolds();
+                    toast.success("All holds cleared");
+                  }}
+                >
+                  <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                  Clear all
                 </Button>
               </div>
             </div>
@@ -608,6 +864,48 @@ const Settings = () => {
           </div>
         </TabsContent>
       </Tabs>
+
+      {/* Edit hold reason dialog */}
+      <Dialog open={!!editingHold} onOpenChange={(o) => { if (!o) { setEditingHold(null); setEditReason(""); } }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit hold reason</DialogTitle>
+            <DialogDescription>
+              Update the compliance message for{" "}
+              {editingHold ? `${editingHold.user_key} / ${editingHold.account_id}` : ""}.
+              This updates the record — a new notification is not re-sent.
+            </DialogDescription>
+          </DialogHeader>
+          <textarea
+            className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm leading-relaxed text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            rows={6}
+            value={editReason}
+            onChange={(e) => setEditReason(e.target.value)}
+          />
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="ghost" onClick={() => { setEditingHold(null); setEditReason(""); }}>Cancel</Button>
+            <Button
+              disabled={editSaving || !editReason.trim()}
+              className="bg-gradient-primary shadow-glow"
+              onClick={async () => {
+                if (!editingHold) return;
+                setEditSaving(true);
+                const ok = await updateHoldReason(editingHold.user_key, editingHold.account_id, editReason);
+                setEditSaving(false);
+                if (ok) {
+                  toast.success("Hold reason updated");
+                  setEditingHold(null);
+                  setEditReason("");
+                } else {
+                  toast.error("Failed to update — check server connection");
+                }
+              }}
+            >
+              {editSaving ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Change password modal */}
       <Dialog open={pwOpen} onOpenChange={setPwOpen}>
