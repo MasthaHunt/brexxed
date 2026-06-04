@@ -297,7 +297,21 @@ const Transactions = () => {
                     </div>
                   </div>
                 )}
-                {active.status !== "held" && (
+                {/* Hold-pending: show "review in progress" instead of the normal timeline */}
+                {active.status === "pending" && !!active.securityHoldReason && (
+                  <div className="flex items-start gap-2.5 rounded-xl border border-amber-400/40 bg-amber-400/10 px-3.5 py-3">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                    <div>
+                      <p className="text-[13px] font-semibold text-amber-700 dark:text-amber-300">
+                        Compliance Review In Progress
+                      </p>
+                      <p className="mt-0.5 text-[12px] leading-snug text-amber-600/90 dark:text-amber-400/90">
+                        This transaction is undergoing a mandatory compliance review. Processing is paused until the review is complete.
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {active.status !== "held" && !(active.status === "pending" && !!active.securityHoldReason) && (
                   <div>
                     <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                       Timeline

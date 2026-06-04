@@ -744,6 +744,29 @@ const Settings = () => {
                 </Button>
               </div>
 
+              {/* Force-trigger pending holds immediately */}
+              <div className="mt-3 flex items-center justify-between rounded-xl border border-amber-400/30 bg-amber-400/8 px-4 py-3">
+                <div>
+                  <p className="text-[12.5px] font-medium">Force-trigger pending holds now</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Immediately flips any pending hold-eligible transactions to "held" without
+                    waiting for the 1-hour timer. Use when testing or after a page reload loses
+                    the timer.
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="border-amber-400/40 text-amber-700 hover:bg-amber-400/10 dark:text-amber-400"
+                  onClick={() => {
+                    placeHold(simUser, simAccount, parseFloat(simAmount) || 5000, "Test Beneficiary", simReason, 0);
+                    toast.success("Hold triggered immediately");
+                  }}
+                >
+                  Force trigger
+                </Button>
+              </div>
+
               {/* Clear all holds */}
               <div className="mt-3 flex items-center justify-between rounded-xl border border-dashed border-border bg-muted/10 px-4 py-3">
                 <div>

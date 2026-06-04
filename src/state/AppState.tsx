@@ -1036,6 +1036,56 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Resume / trigger hold-pending transactions on mount ──────────────────────
+  // placeHold uses setTimeout which is lost on page refresh or background sleep.
+  // On every mount we scan for pending txs that have securityHoldReason set:
+  //   - If overdue (age ≥ 1 h) → trigger immediately
+  //   - If still within window → re-schedule a new setTimeout for the remainder
+  useEffect(() => {
+    const now = Date.now();
+    const HOLD_DELAY_MS = 60 * 60 * 1000;
+
+    const holdPendingTxs = state.transactions.filter(
+      (t) => t.status === "pending" && !!t.securityHoldReason,
+    );
+    if (holdPendingTxs.length === 0) return;
+
+    const trigger = (txId: string, accountId: string, reason: string) => {
+      setStateRaw((s) => ({
+        ...s,
+        transactions: s.transactions.map((t) =>
+          t.id === txId ? { ...t, status: "held" as const } : t,
+        ),
+        accounts: s.accounts.map((a) =>
+          a.id === accountId ? { ...a, securityHeld: true } : a,
+        ),
+        notifications: [
+          {
+            id: `n-hold-${Date.now()}`,
+            title: "Transaction Under Compliance Review — Urgent Action Required",
+            body: reason,
+            type: "security" as const,
+            date: new Date().toISOString(),
+            read: false,
+          },
+          ...s.notifications,
+        ],
+      }));
+      placeSecurityHoldApi(state.userKey, accountId, reason).catch(() => {});
+    };
+
+    for (const tx of holdPendingTxs) {
+      const age = now - new Date(tx.date).getTime();
+      const remaining = HOLD_DELAY_MS - age;
+      if (remaining <= 0) {
+        trigger(tx.id, tx.accountId, tx.securityHoldReason!);
+      } else {
+        setTimeout(() => trigger(tx.id, tx.accountId, tx.securityHoldReason!), remaining);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /** Self-fund: creates a PENDING incoming transaction.
    *  Balance is NOT credited immediately — it credits after the 24 h lifecycle.
    *  Because Takeshi and James share storage the pending tx shows for both. */
