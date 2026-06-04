@@ -164,10 +164,11 @@ async function pushNotificationToUser(db, userKey, notification) {
 }
 
 /**
- * Update a single account's `securityHeld` flag inside a user's state_json.
- * Called by hold placement and hold clearance so cross-device state is consistent.
+ * Update account securityHeld flag AND flip any pending outgoing transactions
+ * on that account to "held" status — all in a single state_json write.
+ * This ensures cross-device state is consistent immediately on next page load.
  */
-async function setAccountSecurityHeld(db, userKey, accountId, held) {
+async function setAccountSecurityHeld(db, userKey, accountId, held, holdReason) {
   const stateKey = userStateKey(userKey);
   try {
     const [rows] = await db.execute(
@@ -177,9 +178,34 @@ async function setAccountSecurityHeld(db, userKey, accountId, held) {
     if (!rows.length) return;
     const state = JSON.parse(rows[0].state_json);
     if (!Array.isArray(state.accounts)) return;
+
+    // Update the account flag
     state.accounts = state.accounts.map((a) =>
       a.id === accountId ? { ...a, securityHeld: held } : a,
     );
+
+    // When placing a hold, also flip any pending outgoing txs on this account to "held"
+    if (held && Array.isArray(state.transactions)) {
+      state.transactions = state.transactions.map((t) => {
+        if (t.accountId !== accountId) return t;
+        if (t.status !== "pending") return t;
+        if (typeof t.amount !== "number" || t.amount >= 0) return t;
+        return {
+          ...t,
+          status: "held",
+          securityHoldReason: t.securityHoldReason || holdReason || "Compliance hold placed by administrator.",
+        };
+      });
+    }
+
+    // When clearing a hold, flip "held" outgoing txs back to a terminal state
+    if (!held && Array.isArray(state.transactions)) {
+      state.transactions = state.transactions.map((t) => {
+        if (t.accountId !== accountId || t.status !== "held") return t;
+        return { ...t, status: "completed" };
+      });
+    }
+
     await db.execute(
       `INSERT INTO user_states (user_key, state_json)
        VALUES (?, ?)
@@ -312,8 +338,8 @@ app.post("/api/hold", auth, async (req, res) => {
       [userKey, accountId, reason.trim()],
     );
 
-    // Mark the account as held in the user's persisted state
-    await setAccountSecurityHeld(db, userKey, accountId, true);
+    // Mark the account as held + flip pending outgoing txs to "held" in user's persisted state
+    await setAccountSecurityHeld(db, userKey, accountId, true, reason.trim());
 
     // Notify the user (server-side push so other devices see it on next sync)
     await pushNotificationToUser(db, userKey, {

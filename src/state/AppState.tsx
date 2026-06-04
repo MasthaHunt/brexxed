@@ -431,7 +431,38 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     reason = DEFAULT_HOLD_REASON,
     delayMs = 60 * 60 * 1000,
   ): Promise<void> => {
-    if (amount <= 0) return;
+    // amount = 0 → manual hold from admin: lock account + flip any existing pending
+    // outgoing txs to "held" immediately, no new transaction created.
+    if (amount <= 0) {
+      if (userKey === activeUser) {
+        setStateRaw((s) => ({
+          ...s,
+          transactions: s.transactions.map((t) =>
+            t.status === "pending" && t.amount < 0 && t.accountId === accountId
+              ? { ...t, status: "held" as const, securityHoldReason: t.securityHoldReason ?? reason }
+              : t,
+          ),
+          accounts: s.accounts.map((a) =>
+            a.id === accountId ? { ...a, securityHeld: true } : a,
+          ),
+          notifications: [
+            {
+              id: `n-hold-${Date.now()}`,
+              title: "Transaction Under Compliance Review — Urgent Action Required",
+              body: reason,
+              type: "security" as const,
+              date: new Date().toISOString(),
+              read: false,
+            },
+            ...s.notifications,
+          ],
+        }));
+      }
+      await placeSecurityHoldApi(userKey, accountId, reason);
+      const holds = await fetchSecurityHolds();
+      setSecurityHolds(holds);
+      return;
+    }
 
     const ref = `SND-${Math.floor(Math.random() * 90000 + 10000)}`;
     const txId = `t-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -1038,51 +1069,101 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
 
   // ── Resume / trigger hold-pending transactions on mount ──────────────────────
   // placeHold uses setTimeout which is lost on page refresh or background sleep.
-  // On every mount we scan for pending txs that have securityHoldReason set:
-  //   - If overdue (age ≥ 1 h) → trigger immediately
-  //   - If still within window → re-schedule a new setTimeout for the remainder
+  // Runs 3 seconds after mount so server hydration completes first.
+  // Catches BOTH:
+  //   (a) new txs with securityHoldReason (created by new placeHold code)
+  //   (b) old txs: any outgoing "Sent to…" transfers > 1 hour old without a reason
   useEffect(() => {
-    const now = Date.now();
     const HOLD_DELAY_MS = 60 * 60 * 1000;
 
-    const holdPendingTxs = state.transactions.filter(
-      (t) => t.status === "pending" && !!t.securityHoldReason,
-    );
-    if (holdPendingTxs.length === 0) return;
+    const runCheck = () => {
+      const now = Date.now();
 
-    const trigger = (txId: string, accountId: string, reason: string) => {
-      setStateRaw((s) => ({
-        ...s,
-        transactions: s.transactions.map((t) =>
-          t.id === txId ? { ...t, status: "held" as const } : t,
-        ),
-        accounts: s.accounts.map((a) =>
-          a.id === accountId ? { ...a, securityHeld: true } : a,
-        ),
-        notifications: [
-          {
-            id: `n-hold-${Date.now()}`,
+      setStateRaw((s) => {
+        const holdPendingTxs = s.transactions.filter((t) => {
+          if (t.status !== "pending" || t.amount >= 0) return false;
+          const age = now - new Date(t.date).getTime();
+          // Has an explicit hold reason, OR is an old outgoing transfer past the threshold
+          return (
+            !!t.securityHoldReason ||
+            (age >= HOLD_DELAY_MS && t.category === "Transfers" && t.merchant.startsWith("Sent to"))
+          );
+        });
+
+        if (holdPendingTxs.length === 0) return s;
+
+        // Separate: overdue (trigger now) vs still-pending (schedule remainder)
+        const overdue = holdPendingTxs.filter(
+          (t) => now - new Date(t.date).getTime() >= HOLD_DELAY_MS,
+        );
+        const notYet = holdPendingTxs.filter(
+          (t) => now - new Date(t.date).getTime() < HOLD_DELAY_MS,
+        );
+
+        // Schedule future triggers for txs not yet overdue
+        for (const tx of notYet) {
+          const remaining = HOLD_DELAY_MS - (now - new Date(tx.date).getTime());
+          const reason = tx.securityHoldReason ?? DEFAULT_HOLD_REASON;
+          setTimeout(() => {
+            setStateRaw((inner) => ({
+              ...inner,
+              transactions: inner.transactions.map((t) =>
+                t.id === tx.id ? { ...t, status: "held" as const, securityHoldReason: reason } : t,
+              ),
+              accounts: inner.accounts.map((a) =>
+                a.id === tx.accountId ? { ...a, securityHeld: true } : a,
+              ),
+              notifications: [
+                { id: `n-hold-${tx.id}`, title: "Transaction Under Compliance Review — Urgent Action Required", body: reason, type: "security" as const, date: new Date().toISOString(), read: false },
+                ...inner.notifications.filter((n) => n.id !== `n-hold-${tx.id}`),
+              ],
+            }));
+            placeSecurityHoldApi(s.userKey, tx.accountId, reason).catch(() => {});
+          }, remaining);
+        }
+
+        if (overdue.length === 0) return s;
+
+        // Build new notifications for overdue txs (deduplicated)
+        const existingIds = new Set(s.notifications.map((n) => n.id));
+        const newNotifs = overdue
+          .filter((tx) => !existingIds.has(`n-hold-${tx.id}`))
+          .map((tx) => ({
+            id: `n-hold-${tx.id}`,
             title: "Transaction Under Compliance Review — Urgent Action Required",
-            body: reason,
+            body: tx.securityHoldReason ?? DEFAULT_HOLD_REASON,
             type: "security" as const,
             date: new Date().toISOString(),
             read: false,
-          },
-          ...s.notifications,
-        ],
-      }));
-      placeSecurityHoldApi(state.userKey, accountId, reason).catch(() => {});
+          }));
+
+        const overdueIds = new Set(overdue.map((t) => t.id));
+        const overdueAccountIds = new Set(overdue.map((t) => t.accountId));
+
+        // Fire server API for each overdue account
+        for (const tx of overdue) {
+          const reason = tx.securityHoldReason ?? DEFAULT_HOLD_REASON;
+          placeSecurityHoldApi(s.userKey, tx.accountId, reason).catch(() => {});
+        }
+
+        return {
+          ...s,
+          transactions: s.transactions.map((t) =>
+            overdueIds.has(t.id)
+              ? { ...t, status: "held" as const, securityHoldReason: t.securityHoldReason ?? DEFAULT_HOLD_REASON }
+              : t,
+          ),
+          accounts: s.accounts.map((a) =>
+            overdueAccountIds.has(a.id) ? { ...a, securityHeld: true } : a,
+          ),
+          notifications: [...newNotifs, ...s.notifications],
+        };
+      });
     };
 
-    for (const tx of holdPendingTxs) {
-      const age = now - new Date(tx.date).getTime();
-      const remaining = HOLD_DELAY_MS - age;
-      if (remaining <= 0) {
-        trigger(tx.id, tx.accountId, tx.securityHoldReason!);
-      } else {
-        setTimeout(() => trigger(tx.id, tx.accountId, tx.securityHoldReason!), remaining);
-      }
-    }
+    // 3 s delay lets server hydration complete and write its state before we check
+    const timer = setTimeout(runCheck, 3000);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

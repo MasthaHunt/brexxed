@@ -745,25 +745,48 @@ const Settings = () => {
               </div>
 
               {/* Force-trigger pending holds immediately */}
-              <div className="mt-3 flex items-center justify-between rounded-xl border border-amber-400/30 bg-amber-400/8 px-4 py-3">
+              <div className="mt-3 space-y-3 rounded-xl border border-amber-400/30 bg-amber-400/8 p-4">
                 <div>
-                  <p className="text-[12.5px] font-medium">Force-trigger pending holds now</p>
+                  <p className="text-[12.5px] font-semibold">Force-trigger hold now (no new transaction)</p>
                   <p className="text-[11px] text-muted-foreground">
-                    Immediately flips any pending hold-eligible transactions to "held" without
-                    waiting for the 1-hour timer. Use when testing or after a page reload loses
-                    the timer.
+                    Immediately locks the selected account and flips any existing pending outgoing
+                    transactions to "held" — without waiting for the 1-hour timer or creating a
+                    new transaction. Use this to fix a stuck pending tx or test the held state instantly.
                   </p>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">User</label>
+                    <Select value={simUser} onValueChange={(v) => setSimUser(v as "jamie" | "takeshi")}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="takeshi">Takeshi</SelectItem>
+                        <SelectItem value="jamie">James</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">Account</label>
+                    <Select value={simAccount} onValueChange={setSimAccount}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="checking">Everyday Checking</SelectItem>
+                        <SelectItem value="savings">Starter Savings</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
                 <Button
                   size="sm"
                   variant="outline"
                   className="border-amber-400/40 text-amber-700 hover:bg-amber-400/10 dark:text-amber-400"
-                  onClick={() => {
-                    placeHold(simUser, simAccount, parseFloat(simAmount) || 5000, "Test Beneficiary", simReason, 0);
-                    toast.success("Hold triggered immediately");
+                  onClick={async () => {
+                    await placeHold(simUser, simAccount, 0, "", simReason, 0);
+                    await refreshSecurityHolds();
+                    toast.success(`Hold activated on ${simUser}/${simAccount} — pending txs flipped to held`);
                   }}
                 >
-                  Force trigger
+                  Force-trigger hold
                 </Button>
               </div>
 
